@@ -59,7 +59,9 @@
     // Never fall back to a mutable branch — a compromised repo could then be
     // injected straight into the KPI pages. Keep in sync with CLAUDE.md pins.
     console.warn("[storkaup] data-storkaup-rev missing — using pinned fallback");
-    return "53b118c";
+    // Commit í storkaup-kpi-web (opna framendarepoið, 2026-10-26). Gömlu
+    // fallbökkin vísuðu á storkaup_kpi, sem er lokað.
+    return "95d5094";
   }
 
   function ensureCss(href, key) {
