@@ -147,18 +147,25 @@
   }
 
   // ── myndræn hjálpartæki ─────────────────────────────────────────────
-  // Frávikssúla eins og .diverge á gömlu forsíðunni: grænt upp, blátt niður,
-  // ±50 % fyllir hálfa súluna.
+  // Frávikssúla eins og .diverge á gömlu forsíðunni: grænt upp, blátt niður.
+  // Hlutfallskvarði (log2): vinstri endi = helmingur (−50 %), hægri = tvöföldun
+  // (+100 %), svo +68 % og +61 % greinast í sundur og −50 % og +100 % eru jafn
+  // langt frá miðju. Út fyrir enda: súlan full og ör við endann.
   function diverge(v) {
     var html = '<div class="skm-div" aria-hidden="true"><div class="skm-div-mid"></div>';
     if (isNum(v)) {
-      var p = Number(v) * 100;
-      var w = Math.min(Math.abs(p), 50);
-      html += p >= 0
+      var r = 1 + Number(v);
+      var x = r > 0 ? Math.log(r) / Math.LN2 : -Infinity;
+      var w = Math.min(Math.abs(x), 1) * 50;
+      html += x >= 0
         ? '<div class="skm-div-pos" style="width:' + w + '%"></div>'
         : '<div class="skm-div-neg" style="width:' + w + '%;left:' + (50 - w) + '%"></div>';
+      if (Math.abs(x) > 1) {
+        html += '<div class="skm-div-over" style="' + (x > 0 ? 'right' : 'left') + ':10px">' +
+                (x > 0 ? '›' : '‹') + '</div>';
+      }
     }
-    return html + '</div>';
+    return html + '</div><div class="skm-div-scale" aria-hidden="true"><span>−50 %</span><span>+100 %</span></div>';
   }
 
   function donut(fill, color, big, small, size) {
@@ -440,6 +447,8 @@
     '.skm-div-mid{position:absolute;left:50%;top:50%;width:1px;height:32px;background:var(--skm-mid);transform:translate(-50%,-50%);z-index:1}',
     '.skm-div-pos{position:absolute;top:0;bottom:0;left:50%;background:var(--skm-green);border-radius:0 16px 16px 0}',
     '.skm-div-neg{position:absolute;top:0;bottom:0;background:var(--skm-blue);border-radius:16px 0 0 16px}',
+    '.skm-div-over{position:absolute;top:50%;transform:translateY(-50%);z-index:2;font-size:18px;font-weight:700;line-height:1;color:#fff}',
+    '.skm-div-scale{width:90%;margin-top:-8px;display:flex;justify-content:space-between;font-size:10px;color:var(--skm-mute)}',
     '.skm-donut{border-radius:50%;display:flex;align-items:center;justify-content:center}',
     '.skm-donut--m{width:150px;height:150px}',
     '.skm-donut-in{width:80%;height:80%;border-radius:50%;background:var(--skm-card);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}',
