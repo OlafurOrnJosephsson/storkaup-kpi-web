@@ -475,19 +475,20 @@
     '@media (max-width:1100px){.skm-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.skm-prod{grid-template-columns:repeat(2,minmax(0,1fr))}}',
     '@media (max-width:640px){.skm-grid{grid-template-columns:minmax(0,1fr)}.skm-k-orders,.skm-k-products{grid-column:auto}.skm-prod{grid-template-columns:minmax(0,1fr)}}',
     // Skjáhamur: 6 dálkar, fyllir gluggann, stærra letur, engin skrunun.
-    '.skm--tv{max-width:none;height:100vh;box-sizing:border-box;padding:24px 32px;gap:16px;overflow:hidden}',
+    // Fixed yfir allan gluggann: annars ýta toppbil og valmynd Webflow neðstu röðinni út fyrir.
+    '.skm--tv{position:fixed;inset:0;z-index:2147483000;width:auto;background:var(--skm-bg);box-sizing:border-box;padding:min(24px,2.5vh) 32px;gap:min(16px,1.6vh);overflow:hidden}',
     '.skm--tv .skm-h1{font-size:30px}',
     '.skm-tvclock{display:flex;align-items:baseline;gap:18px;font-size:22px;font-weight:600}',
     '.skm-clock{color:var(--skm-mute);font-variant-numeric:tabular-nums}',
-    '.skm--tv .skm-grid{flex:1;min-height:0;grid-template-columns:repeat(6,minmax(0,1fr));grid-template-rows:1.3fr 1fr .75fr;gap:16px}',
-    '.skm--tv .skm-card{padding:20px;gap:10px;overflow:hidden}',
+    '.skm--tv .skm-grid{flex:1;min-height:0;grid-template-columns:repeat(6,minmax(0,1fr));grid-template-rows:1.3fr 1fr .75fr;gap:min(16px,1.6vh)}',
+    '.skm--tv .skm-card{padding:min(20px,2vh) 20px;gap:min(10px,1vh);overflow:hidden}',
     '.skm--tv .skm-k-orders{grid-column:span 3}',
     '.skm--tv .skm-k-products{grid-column:span 4}',
     '.skm--tv .skm-k-cats{grid-column:span 2}',
     '.skm--tv .skm-title{font-size:19px}.skm--tv .skm-sub,.skm--tv .skm-foot{font-size:15px}',
-    '.skm--tv .skm-big{font-size:60px}.skm--tv .skm-val{font-size:46px}',
+    '.skm--tv .skm-big{font-size:min(60px,6vh)}.skm--tv .skm-val{font-size:min(46px,4.6vh)}',
     '.skm--tv .skm-hourly{height:auto;flex:1;min-height:80px}',
-    '.skm--tv .skm-donut--m{width:170px;height:170px}.skm--tv .skm-donut-big{font-size:32px}.skm--tv .skm-donut-small{font-size:13px}',
+    '.skm--tv .skm-donut--m{width:min(170px,16vh);height:min(170px,16vh)}.skm--tv .skm-donut-big{font-size:32px}.skm--tv .skm-donut-small{font-size:13px}',
     '.skm--tv .skm-pname{font-size:17px}.skm--tv .skm-cats{font-size:17px}'
   ].join('\n');
 
