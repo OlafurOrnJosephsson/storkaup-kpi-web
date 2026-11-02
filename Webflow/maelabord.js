@@ -168,6 +168,24 @@
     return html + '</div><div class="skm-div-scale" aria-hidden="true"><span>−50 %</span><span>+100 %</span></div>';
   }
 
+  // Mánaðarmælir eins og yoyPct gömlu forsíðunnar: mánuðurinn hingað til sem
+  // hlutfall af öllum sama mánuði í fyrra. 0–200 %, miðjan = allur mánuðurinn
+  // í fyrra. Strikið = þar sem í fyrra var komið á sama tíma; grænt ef við
+  // erum komin lengra, blátt ef ekki.
+  function progress(v, tick, pyLabel) {
+    var html = '<div class="skm-div" aria-hidden="true"><div class="skm-div-mid"></div>';
+    if (isNum(v)) {
+      var x = Math.max(Number(v), 0);
+      var ref = isNum(tick) ? Number(tick) : 1;
+      html += '<div class="skm-prog ' + (x >= ref ? 'skm-prog--up' : 'skm-prog--down') +
+              '" style="width:' + Math.min(x / 2, 1) * 100 + '%"></div>';
+      if (isNum(tick)) html += '<div class="skm-prog-tick" style="left:' + Math.min(Number(tick) / 2, 1) * 100 + '%"></div>';
+      if (x > 2) html += '<div class="skm-div-over" style="right:10px">›</div>';
+    }
+    return html + '</div><div class="skm-div-scale skm-prog-scale" aria-hidden="true"><span>0</span>' +
+      '<span class="skm-prog-mid">' + esc(pyLabel) + '</span><span>200 %</span></div>';
+  }
+
   function donut(fill, color, big, small, size) {
     var f = isNum(fill) ? Math.max(0, Math.min(1, Number(fill))) * 100 : 0;
     return '<div class="skm-donut skm-donut--' + (size || 'm') + '" style="background:conic-gradient(' + color + ' ' + f + '%, var(--skm-line) ' + f + '%)">' +
@@ -253,14 +271,26 @@
       '<div class="skm-val">' + signed(day.pace_aov) + '</div>' + diverge(day.pace_aov) +
       '<div class="skm-foot">' + esc(dayFoot('aov')) + '</div>', 'skm-center');
 
-    c.mOrders = card('m-orders', head(esc(monthLabel(ym).split(' ')[0]) + ' <strong>vefpantanir</strong>', cmpMonth) +
-      '<div class="skm-val">' + signed(mon.yoy_orders) + '</div>' + diverge(mon.yoy_orders) +
-      '<div class="skm-foot">' + num(mon.orders) + ' pantanir' +
-        (isNum(mon.py_orders) ? ' · ' + num(mon.py_orders) + ' í fyrra' : '') + '</div>', 'skm-center');
+    // Mælir ef SQL skilar of_py_* (maelabord_v1.sql 2026-11-02), annars frávikssúla.
+    var meter = isNum(mon.of_py_orders);
+    var cur = ym === monthOf(todayIso());
+    var sameTime = cur ? ' m.v. sama tíma' : ' m.v. ' + py;
+    c.mOrders = card('m-orders', head(esc(monthLabel(ym).split(' ')[0]) + ' <strong>vefpantanir</strong>',
+        meter ? 'hlutfall af ' + py : cmpMonth) +
+      (meter
+        ? '<div class="skm-val">' + pct(mon.of_py_orders, 0) + '</div>' + progress(mon.of_py_orders, mon.pace_py_orders, py) +
+          '<div class="skm-foot">' + num(mon.orders) + ' af ' + num(mon.py_full_orders) + ' pöntunum · ' +
+            signed(mon.yoy_orders) + sameTime + '</div>'
+        : '<div class="skm-val">' + signed(mon.yoy_orders) + '</div>' + diverge(mon.yoy_orders) +
+          '<div class="skm-foot">' + num(mon.orders) + ' pantanir</div>'), 'skm-center');
 
-    c.mRevenue = card('m-revenue', head(esc(monthLabel(ym).split(' ')[0]) + ' <strong>vefsala</strong>', cmpMonth) +
-      '<div class="skm-val">' + signed(mon.yoy_revenue) + '</div>' + diverge(mon.yoy_revenue) +
-      '<div class="skm-foot">meðalpöntun ' + signed(mon.yoy_aov) + '</div>', 'skm-center');
+    c.mRevenue = card('m-revenue', head(esc(monthLabel(ym).split(' ')[0]) + ' <strong>vefsala</strong>',
+        meter ? 'hlutfall af ' + py : cmpMonth) +
+      (meter
+        ? '<div class="skm-val">' + pct(mon.of_py_revenue, 0) + '</div>' + progress(mon.of_py_revenue, mon.pace_py_revenue, py) +
+          '<div class="skm-foot">' + signed(mon.yoy_revenue) + sameTime + ' · meðalpöntun ' + signed(mon.yoy_aov) + '</div>'
+        : '<div class="skm-val">' + signed(mon.yoy_revenue) + '</div>' + diverge(mon.yoy_revenue) +
+          '<div class="skm-foot">meðalpöntun ' + signed(mon.yoy_aov) + '</div>'), 'skm-center');
 
     c.newco = card('newco', head('<strong>Ný fyrirtæki</strong> á vef', bcIn) +
       donut(isNum(nc.pct) ? Number(nc.pct) / GOAL_NEW : null, 'var(--skm-orange)', num(nc.n), pct(nc.pct) + ' · markmið 10 %') +
@@ -454,6 +484,10 @@
     '.skm-div-neg{position:absolute;top:0;bottom:0;background:var(--skm-blue);border-radius:16px 0 0 16px}',
     '.skm-div-over{position:absolute;top:50%;transform:translateY(-50%);z-index:2;font-size:18px;font-weight:700;line-height:1;color:#fff}',
     '.skm-div-scale{width:90%;margin-top:-8px;display:flex;justify-content:space-between;font-size:10px;color:var(--skm-mute)}',
+    '.skm-prog{position:absolute;top:0;bottom:0;left:0;border-radius:16px}',
+    '.skm-prog--up{background:var(--skm-green)}.skm-prog--down{background:var(--skm-blue)}',
+    '.skm-prog-tick{position:absolute;top:-5px;bottom:-5px;width:3px;margin-left:-1.5px;border-radius:2px;background:var(--skm-ink);z-index:2}',
+    '.skm-prog-scale{position:relative}.skm-prog-mid{position:absolute;left:50%;transform:translateX(-50%)}',
     '.skm-donut{border-radius:50%;display:flex;align-items:center;justify-content:center}',
     '.skm-donut--m{width:150px;height:150px}',
     '.skm-donut-in{width:80%;height:80%;border-radius:50%;background:var(--skm-card);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}',
