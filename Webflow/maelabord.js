@@ -220,6 +220,10 @@
     var py = monthLabel(idxMonth(monthIdx(ym) - 12)).toLowerCase();
     // Líðandi mánuður er borinn saman við sama tímabil í fyrra (maelabord_v1.sql).
     var cmpMonth = 'm.v. ' + (ym === monthOf(todayIso()) ? 'sama tímabil ' : '') + py;
+    // BC-spjöldin sýna síðasta mánuð með viku af BC-gögnum (bc_month), t.d.
+    // október fyrstu daga nóvember; án bc_month (eldra SQL) valinn mánuður.
+    var bcYm = j.bc_month || ym;
+    var bcIn = 'í ' + MN[+bcYm.split('-')[1] - 1];
 
     function dayFoot(kind) {
       var parts = [];
@@ -257,21 +261,21 @@
       '<div class="skm-val">' + signed(mon.yoy_revenue) + '</div>' + diverge(mon.yoy_revenue) +
       '<div class="skm-foot">meðalpöntun ' + signed(mon.yoy_aov) + '</div>', 'skm-center');
 
-    c.newco = card('newco', head('<strong>Ný fyrirtæki</strong> á vef', 'í ' + MN[+ym.split('-')[1] - 1]) +
+    c.newco = card('newco', head('<strong>Ný fyrirtæki</strong> á vef', bcIn) +
       donut(isNum(nc.pct) ? Number(nc.pct) / GOAL_NEW : null, 'var(--skm-orange)', num(nc.n), pct(nc.pct) + ' · markmið 10 %') +
       '<div class="skm-foot">' + num(nc.active) + ' fyrirtæki keyptu á vef</div>', 'skm-center');
 
     c.webOrders = card('web-orders', head('<strong>Vefpantanir</strong> %', 'af öllum pöntunum') +
-      donut(sh.web_orders_pct, 'var(--skm-blue)', pct(sh.web_orders_pct), 'í ' + MN[+ym.split('-')[1] - 1]), 'skm-center');
+      donut(sh.web_orders_pct, 'var(--skm-blue)', pct(sh.web_orders_pct), bcIn), 'skm-center');
 
     c.webRevenue = card('web-revenue', head('<strong>Vefsala</strong> %', 'af heildarsölu') +
-      donut(sh.web_revenue_pct, 'var(--skm-green-ink)', pct(sh.web_revenue_pct), 'í ' + MN[+ym.split('-')[1] - 1]), 'skm-center');
+      donut(sh.web_revenue_pct, 'var(--skm-green-ink)', pct(sh.web_revenue_pct), bcIn), 'skm-center');
 
-    c.goal = card('goal', head('<strong>Vefsala</strong> markmið', '50 % árið ' + ym.split('-')[0]) +
+    c.goal = card('goal', head('<strong>Vefsala</strong> markmið', '50 % árið ' + bcYm.split('-')[0] + ' · ' + bcIn) +
       donut(sh.goal_pct, 'var(--skm-orange-ink)', pct(sh.goal_pct, 0), 'af markmiði'), 'skm-center');
 
     var bw = isNum(sh.basket_web_share) ? Number(sh.basket_web_share) * 100 : null;
-    c.basket = card('basket', head('<strong>Karfa</strong> hlutföll', 'stærð körfu: vefur á móti BC') +
+    c.basket = card('basket', head('<strong>Karfa</strong> hlutföll', 'stærð körfu ' + bcIn + ': vefur á móti BC') +
       '<div class="skm-val">' + (bw == null ? '–' : num(bw / (100 - bw) * 100) + ' %') + '</div>' +
       '<div class="skm-split" aria-hidden="true"><div style="width:' + (bw == null ? 50 : bw) + '%"></div><div></div></div>' +
       '<div class="skm-split-lbl"><span>VEFUR ' + (bw == null ? '–' : num(bw) + ' %') + '</span>' +
