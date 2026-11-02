@@ -255,7 +255,8 @@
 
     c.mOrders = card('m-orders', head(esc(monthLabel(ym).split(' ')[0]) + ' <strong>vefpantanir</strong>', cmpMonth) +
       '<div class="skm-val">' + signed(mon.yoy_orders) + '</div>' + diverge(mon.yoy_orders) +
-      '<div class="skm-foot">' + num(mon.orders) + ' pantanir</div>', 'skm-center');
+      '<div class="skm-foot">' + num(mon.orders) + ' pantanir' +
+        (isNum(mon.py_orders) ? ' · ' + num(mon.py_orders) + ' í fyrra' : '') + '</div>', 'skm-center');
 
     c.mRevenue = card('m-revenue', head(esc(monthLabel(ym).split(' ')[0]) + ' <strong>vefsala</strong>', cmpMonth) +
       '<div class="skm-val">' + signed(mon.yoy_revenue) + '</div>' + diverge(mon.yoy_revenue) +
