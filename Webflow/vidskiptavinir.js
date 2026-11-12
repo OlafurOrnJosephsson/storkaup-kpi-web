@@ -28,6 +28,8 @@
  *   get_desk_customers_v1         Tækifæri: panta í afgreiðslu
  *   set_customer_not_web_v1 / get_not_web_customers_v1   „Ekki vefkúnni“ (core/sql/customer_not_web_v1.sql)
  *   get_graduated_customers_v1 / ungraduate_customer_v1  útskrift af vinnulista (core/sql/priority_graduation_v1.sql)
+ *   get_customer_product_groups_v1 / save_customer_product_groups_v1   flokkaður vörulisti
+ *                                 (core/sql/customer_product_groups_v1.sql, 2026-11-12)
  * Fyrir (óbreytt):
  *   get_customer_last_orders, get_customer_priority_flags, get_active_sales_reps,
  *   set_customer_priority_flag, assign_customer_priority_rep,
@@ -36,6 +38,9 @@
  * GAS doPost (valfrjálst, aðeins ef gasWebAppUrl er stillt):
  *   list_templates, list_recipients, send_template_email,
  *   send_template_bulk („Senda vefkynningu“ í magnstikunni; webapp.js)
+ *   group_customer_products („Flokka vörur“ í vörulistanum; core/product_groups.js).
+ *     Claude skiptir vörunum í 2–4 flokka fyrir þennan viðskiptavin. Falli
+ *     kallið, eða RPC-ið vanti, birtist vörulistinn óflokkaður eins og áður.
  *
  * Húsreglan: hvert kall fellur fyrir sig. Falli vörulistinn standa
  * lykiltölurnar; falli flöggin virkar leitin og prófíllinn samt.
@@ -57,6 +62,7 @@
   var RECENT_KEY = 'storkaup:vidskiptavinir:recent';
   var RECENT_MAX = 12;
   var STALE_DAYS = 30;
+  var PVIEW_KEY = 'storkaup:vidskiptavinir:pview';
 
   var cfg = window.STORKAUP_CONFIG || {};
   var BASE = String(cfg.supabaseUrl || '').replace(/\/+$/, '');
@@ -299,6 +305,13 @@
     days: '365',            // 90 | 365 | all
     pFilter: '',
     pSort: { key: 'order_count', dir: -1 },
+    // Flokkaður vörulisti (2026-11-12). groups = svar get_customer_product_groups_v1
+    // ({doc, updated_at, ...}) eða null. doc.items: vörunúmer → flokkur | 'fees';
+    // vörur utan doc.items eru óflokkaðar.
+    pView: loadJson(PVIEW_KEY, 'grouped'),   // list | grouped (gildir þegar flokkun er til)
+    groups: null, groupsLoaded: false, groupsErr: '',
+    groupBusy: '',          // '' | 'group' | 'place'
+    gCollapsed: { fees: true }, gOnly: '', gEditing: '', gDraft: '',
     card: null, cardErr: '',
     products: null, productsErr: '',
     orders: null, ordersErr: '',
@@ -404,6 +417,42 @@
     '.skv-toast{position:fixed;right:18px;bottom:18px;z-index:9999;padding:10px 14px;border-radius:8px;font-size:14px;box-shadow:0 6px 24px rgba(0,0,0,.15);max-width:360px}',
     '.skv-toast-ok{background:#17211D;color:#fff}.skv-toast-err{background:#8E2B22;color:#fff}',
     '.skv-sr{position:absolute;left:-9999px}',
+    // Flokkaður vörulisti
+    '.skv-seg{display:inline-flex;border:1px solid #D5DAD5;border-radius:8px;overflow:hidden}',
+    '.skv-seg button{border:0;background:#fff;font:inherit;font-size:14px;padding:0 12px;min-height:38px;cursor:pointer;color:var(--ink2)}',
+    '.skv-seg button+button{border-left:1px solid #D5DAD5}',
+    '.skv-seg button[aria-pressed="true"]{background:var(--acc-bg);color:#0E4535;font-weight:600}',
+    '.skv-seg button:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}',
+    '.skv-gstat{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line2);font-size:14px;color:var(--ink2)}',
+    '.skv-gstat .skv-btn{min-height:34px;padding:5px 11px;font-size:13px}',
+    '.skv-spin{display:inline-block;width:12px;height:12px;border:2px solid #D5DAD5;border-top-color:var(--acc);border-radius:50%;animation:skvspin .8s linear infinite;margin-right:8px;vertical-align:-1px}',
+    '@keyframes skvspin{to{transform:rotate(360deg)}}',
+    '.skv-gchips{display:flex;flex-wrap:wrap;gap:6px;padding:10px 14px 0}',
+    '.skv-gchips .skv-chip{display:inline-flex;align-items:center;gap:7px}',
+    '.skv-gchips .skv-chip b{font-variant-numeric:tabular-nums}',
+    '.skv-chip-warn{background:#FFF8F0;border-color:#F3D3B0}',
+    '.skv-chip-mute{color:var(--mute)}',
+    '.skv-meter{display:inline-block;width:38px;height:6px;border-radius:3px;background:var(--line2);overflow:hidden}',
+    '.skv-meter i{display:block;height:100%;background:var(--acc)}',
+    '.skv-tbl tr.skv-grp td{background:#F7F8F5;border-bottom:1px solid #D5DAD5;padding:12px 11px}',
+    '.skv-tbl tbody+tbody tr.skv-grp td{border-top:10px solid #fff}',
+    '.skv-tbl tr.skv-grp-new td{background:#FFF8F0}',
+    '.skv-gh{display:flex;gap:10px;align-items:flex-start}',
+    '.skv-caret{border:0;background:transparent;cursor:pointer;width:26px;height:26px;border-radius:6px;color:var(--mute);display:inline-grid;place-items:center;flex:none;padding:0}',
+    '.skv-caret:hover{background:var(--line2)}',
+    '.skv-caret svg{transition:transform .15s}',
+    '.skv-caret[aria-expanded="false"] svg{transform:rotate(-90deg)}',
+    '.skv-ghm{display:flex;flex-direction:column;gap:3px;min-width:0}',
+    '.skv-ght{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center}',
+    '.skv-ght .skv-btn{min-height:32px;padding:4px 10px;font-size:13px}',
+    '.skv-ghn{font-size:15.5px;font-weight:600}',
+    '.skv-ghx{font-size:13px;color:var(--mute);font-variant-numeric:tabular-nums}',
+    '.skv-ghw{font-size:13.5px;color:var(--ink2);max-width:80ch}',
+    '.skv-tlink{border:0;background:transparent;color:var(--acc);font:inherit;font-size:13px;font-weight:500;cursor:pointer;padding:2px}',
+    '.skv-tlink:hover{text-decoration:underline}',
+    '.skv-gren{font:inherit;font-size:15px;font-weight:600;padding:4px 8px;border:1px solid var(--acc);border-radius:6px;min-width:240px;color:var(--ink)}',
+    '.skv-mini{font:inherit;font-size:13px;padding:4px 6px;border:1px solid #D5DAD5;border-radius:6px;background:#fff;color:var(--ink);max-width:210px}',
+    '@media (prefers-reduced-motion:reduce){.skv-spin{animation:none}.skv-caret svg{transition:none}}',
     '.skv-placeholder{background:var(--card);border:1px dashed #C9D0CA;border-radius:12px;padding:40px 24px;color:var(--mute);text-align:center}'
   ].join('\n');
 
@@ -838,6 +887,7 @@
             var l = v === 'all' ? 'Öll saga' : 'Síðustu ' + v + ' dagar';
             return '<option value="' + v + '"' + (state.days === v ? ' selected' : '') + '>' + l + '</option>';
           }).join('') + '</select>' +
+        groupTools() +
         '<button class="skv-btn" data-act="csv">Excel</button><button class="skv-btn" data-act="print">PDF</button></div>';
     }
     var body = state.ptab === 'products' ? renderProducts() : state.ptab === 'orders' ? renderOrders() : renderTouches();
@@ -860,10 +910,10 @@
   function visibleProducts() {
     var list = (state.products || []).slice();
     var q = state.pFilter.trim().toLowerCase();
-    if (q) list = list.filter(function (p) { return (p.sku + ' ' + p.product_name + ' ' + (p.category || '')).toLowerCase().indexOf(q) !== -1; });
+    if (q) list = list.filter(function (p) { return (p.sku + ' ' + p.product_name + ' ' + catOf(p)).toLowerCase().indexOf(q) !== -1; });
     var k = state.pSort.key, dir = state.pSort.dir;
     list.sort(function (a, b) {
-      var x = a[k], y = b[k];
+      var x = k === 'category' ? catOf(a) : a[k], y = k === 'category' ? catOf(b) : b[k];
       if (typeof x === 'number' || typeof y === 'number' || (!isNaN(Number(x)) && !isNaN(Number(y)) && x !== '' && y !== '' && x != null && y != null && k !== 'sku')) {
         return ((Number(x) || 0) - (Number(y) || 0)) * dir;
       }
@@ -876,25 +926,192 @@
     if (state.productsErr) return '<div class="skv-err">Náði ekki í vörulistann: ' + esc(state.productsErr) + '</div>';
     if (!state.products) return '<div class="skv-empty">Sæki vörulista…</div>';
     if (!state.products.length) return '<div class="skv-empty">Engin kaup skráð í BC á þessu tímabili.</div>';
+    if (grouped()) return renderGrouped();
     var list = visibleProducts();
     var lapsed = state.products.filter(function (p) { return p.lapsed; }).length;
-    var th = PCOLS.map(function (c) {
+    var rows = list.map(function (p) { return productRow(p, ''); }).join('');
+    var busy = state.groupBusy === 'group'
+      ? '<div class="skv-gstat"><span><span class="skv-spin"></span>Claude flokkar vörurnar. Það getur tekið allt að mínútu.</span></div>'
+      : '';
+    var note = '<div class="skv-sub" style="padding:10px 14px">' + list.length + ' vörur' +
+      (lapsed ? ' · <span class="skv-due">' + lapsed + ' keyptar reglulega en ekki nýlega</span>' : '') + ' · verð án VSK, úr síðasta reikningi</div>';
+    return busy + note + '<div class="skv-tblwrap"><table class="skv-tbl"><thead><tr>' + productHead(PCOLS) + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  function productHead(cols) {
+    return cols.map(function (c) {
       var arrow = state.pSort.key === c.key ? (state.pSort.dir > 0 ? ' ↑' : ' ↓') : '';
       return '<th' + (c.n ? ' class="skv-n"' : '') + ' aria-sort="' + (state.pSort.key === c.key ? (state.pSort.dir > 0 ? 'ascending' : 'descending') : 'none') + '"><button data-act="psort" data-v="' + c.key + '">' + c.label + arrow + '</button></th>';
     }).join('');
-    var rows = list.map(function (p) {
-      var web = p.on_web
-        ? (p.web_url ? '<a class="skv-b skv-good" href="' + esc(p.web_url) + '" target="_blank" rel="noopener">Á vef ↗</a>' : '<span class="skv-b skv-good">Á vef</span>')
-        : '<span class="skv-b skv-warn">Ekki á vef</span>';
-      var last = esc(fmtDate(p.last_bought)) + (p.lapsed ? '<br><span class="skv-b skv-warn" title="Keypt reglulega en ekki í ' + esc(daysSince(p.last_bought)) + ' daga">Hætt að kaupa?</span>' : '');
-      return '<tr' + (p.lapsed ? ' class="skv-lapsed"' : '') + '><td class="skv-mono">' + esc(p.sku) + '</td><td style="font-weight:500">' + esc(p.product_name) + '</td>' +
-        '<td style="color:var(--mute)">' + esc(p.category || '–') + '</td><td class="skv-n">' + num(p.order_count) + '</td>' +
-        '<td class="skv-n">' + num(p.total_qty, 2) + (p.uom ? ' ' + esc(String(p.uom).toLowerCase()) : '') + '</td>' +
-        '<td>' + last + '</td><td class="skv-n">' + (p.last_unit_price != null ? num(p.last_unit_price, 0) + ' kr.' : '–') + '</td><td>' + web + '</td></tr>';
+  }
+
+  // gid '' = óflokkaður listi (með Flokkur-dálki); annars flokkur vörunnar
+  // (með „Færa í“ í stað Flokkur-dálksins).
+  function productRow(p, gid) {
+    var web = p.on_web
+      ? (p.web_url ? '<a class="skv-b skv-good" href="' + esc(p.web_url) + '" target="_blank" rel="noopener">Á vef ↗</a>' : '<span class="skv-b skv-good">Á vef</span>')
+      : '<span class="skv-b skv-warn">Ekki á vef</span>';
+    var last = esc(fmtDate(p.last_bought)) + (p.lapsed ? '<br><span class="skv-b skv-warn" title="Keypt reglulega en ekki í ' + esc(daysSince(p.last_bought)) + ' daga">Hætt að kaupa?</span>' : '');
+    return '<tr' + (p.lapsed ? ' class="skv-lapsed"' : '') + '><td class="skv-mono">' + esc(p.sku) + '</td><td style="font-weight:500">' + esc(p.product_name) + '</td>' +
+      (gid ? '' : '<td style="color:var(--mute)">' + esc(catOf(p) || '–') + '</td>') +
+      '<td class="skv-n">' + num(p.order_count) + '</td>' +
+      '<td class="skv-n">' + num(p.total_qty, 2) + (p.uom ? ' ' + esc(String(p.uom).toLowerCase()) : '') + '</td>' +
+      '<td>' + last + '</td><td class="skv-n">' + (p.last_unit_price != null ? num(p.last_unit_price, 0) + ' kr.' : '–') + '</td><td>' + web + '</td>' +
+      (gid ? '<td>' + moveSelect(p, gid) + '</td>' : '') + '</tr>';
+  }
+
+  // ── flokkaður vörulisti ──────────────────────────────────────────────
+  var CHEV = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 5l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  function gDoc() { return state.groups && state.groups.doc ? state.groups.doc : null; }
+  function gList() { var d = gDoc(); return d && Array.isArray(d.groups) ? d.groups : []; }
+  function gFind(id) { return gList().filter(function (g) { return g.id === id; })[0] || null; }
+  function grouped() { return !!gDoc() && state.pView === 'grouped'; }
+
+  // Flokkur vöru: auðkenni flokks | 'fees' | 'new' (óflokkuð).
+  function gOf(p) {
+    var d = gDoc();
+    if (!d || !d.items) return 'new';
+    var v = d.items[String(p.sku == null ? '' : p.sku).trim()];
+    if (v === 'fees') return 'fees';
+    return v && gFind(v) ? v : 'new';
+  }
+
+  function gName(id) {
+    if (id === 'fees') return 'Gjöld og þjónusta';
+    if (id === 'new') return 'Óflokkaðar vörur';
+    var g = gFind(id);
+    return g ? g.name : '';
+  }
+
+  // Flokkur-dálkurinn: flokkur viðskiptavinarins þegar hann er til, annars
+  // vefflokkurinn (sem er tómur fyrir allt sem er ekki á vef).
+  function catOf(p) {
+    if (!gDoc()) return p.category || '';
+    var g = gOf(p);
+    return g === 'fees' ? 'Gjald / þjónusta' : g === 'new' ? 'Óflokkað' : gName(g);
+  }
+
+  function groupTools() {
+    if (gDoc()) {
+      return '<div class="skv-seg" role="group" aria-label="Sýn vörulista">' +
+        '<button type="button" data-act="pview" data-v="list" aria-pressed="' + !grouped() + '">Listi</button>' +
+        '<button type="button" data-act="pview" data-v="grouped" aria-pressed="' + grouped() + '">Flokkað</button></div>';
+    }
+    if (!GAS_URL || !state.groupsLoaded || state.groupsErr || !state.products || state.products.length < 6) return '';
+    return '<button class="skv-btn" data-act="group-run"' + (state.groupBusy ? ' disabled' : '') +
+      ' title="Claude skiptir vörunum í 2–4 flokka sem passa þessum viðskiptavini">' +
+      (state.groupBusy ? 'Flokka…' : 'Flokka vörur') + '</button>';
+  }
+
+  function gBuckets() {
+    var b = {};
+    var add = function (key, id, p) { (b[id] = b[id] || { all: [], shown: [] })[key].push(p); };
+    (state.products || []).forEach(function (p) { add('all', gOf(p), p); });
+    visibleProducts().forEach(function (p) { add('shown', gOf(p), p); });
+    return b;
+  }
+
+  function renderGrouped() {
+    var d = gDoc();
+    var gs = gList();
+    var b = gBuckets();
+    var count = function (id) { return b[id] ? b[id].all.length : 0; };
+    var nIn = gs.reduce(function (s, g) { return s + count(g.id); }, 0);
+    var nNew = count('new'), nFees = count('fees');
+    var pct = function (id) { return nIn ? Math.round(count(id) / nIn * 100) : 0; };
+    var q = state.pFilter.trim();
+
+    var stat;
+    if (state.groupBusy === 'group') {
+      stat = '<span><span class="skv-spin"></span>Claude flokkar vörurnar upp á nýtt. Það getur tekið allt að mínútu.</span>';
+    } else if (state.groupBusy === 'place') {
+      stat = '<span><span class="skv-spin"></span>Claude raðar ' + nNew + ' ' + (nNew === 1 ? 'vöru' : 'vörum') + ' í flokkana…</span>';
+    } else {
+      var edited = state.groups.updated_at && d.grouped_at &&
+        Math.abs((parseTs(state.groups.updated_at) || 0) - (parseTs(d.grouped_at) || 0)) > 60000;
+      var warn = Array.isArray(d.warnings) && d.warnings.length ? ' title="Athugasemdir úr yfirferð: ' + esc(d.warnings.join(' ')) + '"' : '';
+      stat = '<span' + warn + '>Flokkað ' + esc(fmtDate(d.grouped_at)) + ' af Claude' +
+        (d.grouped_by ? ' (' + esc(personLabel(d.grouped_by)) + ')' : '') +
+        ' · ' + nIn + ' vörur í ' + gs.length + ' flokkum' +
+        (nNew ? ' · <span class="skv-due">' + nNew + ' óflokkaðar</span>' : '') +
+        (edited ? ' · breytt ' + esc(fmtDate(state.groups.updated_at)) + (state.groups.updated_by ? ' af ' + esc(personLabel(state.groups.updated_by)) : '') : '') +
+        '</span>';
+    }
+    stat = '<div class="skv-gstat">' + stat +
+      (GAS_URL ? '<button class="skv-btn" data-act="group-run"' + (state.groupBusy ? ' disabled' : '') + '>Flokka aftur</button>' : '') + '</div>';
+
+    var chips = gs.map(function (g) {
+      var pc = pct(g.id);
+      return '<button class="skv-chip" data-act="gonly" data-v="' + esc(g.id) + '" aria-pressed="' + (state.gOnly === g.id) + '">' +
+        esc(g.name) + ' <b>' + count(g.id) + '</b><span class="skv-meter" aria-hidden="true"><i style="width:' + pc + '%"></i></span>' + pc + '%</button>';
     }).join('');
-    var note = '<div class="skv-sub" style="padding:10px 14px">' + list.length + ' vörur' +
-      (lapsed ? ' · <span class="skv-due">' + lapsed + ' keyptar reglulega en ekki nýlega</span>' : '') + ' · verð án VSK, úr síðasta reikningi</div>';
-    return note + '<div class="skv-tblwrap"><table class="skv-tbl"><thead><tr>' + th + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    if (nNew) chips += '<button class="skv-chip skv-chip-warn" data-act="gonly" data-v="new" aria-pressed="' + (state.gOnly === 'new') + '">Óflokkaðar <b>' + nNew + '</b></button>';
+    if (nFees) chips += '<button class="skv-chip skv-chip-mute" data-act="gonly" data-v="fees" aria-pressed="' + (state.gOnly === 'fees') + '">Gjöld og þjónusta <b>' + nFees + '</b> ekki í lista</button>';
+
+    var cols = PCOLS.filter(function (c) { return c.key !== 'category'; });
+    var order = gs.map(function (g) { return g.id; }).concat(['new', 'fees']);
+    if (state.gOnly) order = order.filter(function (id) { return id === state.gOnly; });
+    var bodies = order.map(function (id) {
+      var bk = b[id];
+      if (!bk || !bk.all.length) return '';
+      if (q && !bk.shown.length) return '';
+      var open = !state.gCollapsed[id] || !!q;
+      var rows = open ? bk.shown.map(function (p) { return productRow(p, id); }).join('') : '';
+      return '<tbody>' + groupHead(id, bk.all, open, cols.length + 1, pct(id)) + rows + '</tbody>';
+    }).join('');
+
+    var note = '<div class="skv-sub" style="padding:10px 14px">' + nIn + ' vörur í flokkum' +
+      (nNew ? ' · ' + nNew + ' óflokkaðar' : '') + (nFees ? ' · ' + nFees + ' gjöld og þjónusta utan lista' : '') +
+      ' · verð án VSK, úr síðasta reikningi</div>';
+    return stat + '<div class="skv-gchips">' + chips + '</div>' + note +
+      '<div class="skv-tblwrap"><table class="skv-tbl"><thead><tr>' + productHead(cols) + '<th>Færa í</th></tr></thead>' +
+      (bodies || '<tbody><tr><td colspan="' + (cols.length + 1) + '" class="skv-empty">Engin vara passar við síuna.</td></tr></tbody>') +
+      '</table></div>';
+  }
+
+  function groupHead(id, items, open, cols, pc) {
+    var g = gFind(id);
+    var name = gName(id);
+    var why = id === 'new'
+      ? 'Vörur sem bættust við eftir flokkun eða lentu ekki í flokki. Claude getur raðað þeim í flokkana sem fyrir eru, svo heitin haldast.'
+      : id === 'fees'
+        ? 'Auramunur, vinna, akstur og önnur gjöld. Regla tekur þau frá áður en listinn fer til Claude, svo þau fara hvorki í flokk né á innkaupalistann.'
+        : (g && g.why) || '';
+    var top;
+    if (state.gEditing === id) {
+      top = '<label class="skv-sr" for="skv-gren">Nýtt heiti flokks</label>' +
+        '<input id="skv-gren" class="skv-gren" maxlength="60" value="' + esc(state.gDraft) + '">' +
+        '<button class="skv-btn skv-pri" data-act="grename-save" data-v="' + esc(id) + '">Vista</button>' +
+        '<button class="skv-tlink" data-act="grename-cancel">Hætta við</button>';
+    } else {
+      top = '<span class="skv-ghn">' + esc(name) + '</span>';
+      if (id === 'new') {
+        top += '<span class="skv-b skv-warn">' + items.length + ' óflokkaðar</span>' +
+          (GAS_URL ? '<button class="skv-btn" data-act="group-place"' + (state.groupBusy ? ' disabled' : '') + '>Raða í flokkana</button>' : '');
+      } else if (id === 'fees') {
+        top += '<span class="skv-b skv-mute">Ekki í innkaupalista</span><span class="skv-ghx">' + items.length + (items.length === 1 ? ' lína' : ' línur') + '</span>';
+      } else {
+        var onWeb = items.filter(function (p) { return p.on_web; }).length;
+        top += '<span class="skv-ghx">' + items.length + (items.length === 1 ? ' vara' : ' vörur') + ' · ' + pc + '% af listanum · ' +
+          onWeb + ' af ' + items.length + ' á vef</span>' +
+          '<button class="skv-tlink" data-act="grename" data-v="' + esc(id) + '">Endurnefna</button>';
+      }
+    }
+    return '<tr class="skv-grp' + (id === 'new' ? ' skv-grp-new' : '') + '"><td colspan="' + cols + '"><div class="skv-gh">' +
+      '<button class="skv-caret" data-act="gtoggle" data-v="' + esc(id) + '" aria-expanded="' + !!open + '" aria-label="' + (open ? 'Fella saman ' : 'Opna ') + esc(name) + '">' + CHEV + '</button>' +
+      '<div class="skv-ghm"><div class="skv-ght">' + top + '</div>' + (why ? '<div class="skv-ghw">' + esc(why) + '</div>' : '') + '</div></div></td></tr>';
+  }
+
+  function moveSelect(p, gid) {
+    var sku = String(p.sku == null ? '' : p.sku).trim();
+    var opts = (gid === 'new' ? '<option value="new" selected>Veldu flokk…</option>' : '') +
+      gList().map(function (g) {
+        return '<option value="' + esc(g.id) + '"' + (gid === g.id ? ' selected' : '') + '>' + esc(g.name) + '</option>';
+      }).join('') +
+      '<option value="fees"' + (gid === 'fees' ? ' selected' : '') + '>Ekki í innkaupalista</option>';
+    return '<select class="skv-mini" data-act="gmove" data-sku="' + esc(sku) + '" aria-label="Færa ' + esc(p.product_name) + ' í flokk"' +
+      (state.groupBusy ? ' disabled' : '') + '>' + opts + '</select>';
   }
 
   function renderOrders() {
@@ -990,6 +1207,8 @@
     state.touches = null; state.touchesErr = '';
     state.emailOpen = false; state.emailData = null; state.emailErr = '';
     state.pFilter = '';
+    state.groups = null; state.groupsLoaded = false; state.groupsErr = ''; state.groupBusy = '';
+    state.gCollapsed = { fees: true }; state.gOnly = ''; state.gEditing = ''; state.gDraft = '';
     state.noteDraft = ''; state.fuDraft = null;
     state.notWebOpen = false; state.notWebNote = '';
     remember(id, name);
@@ -1007,6 +1226,7 @@
     }).catch(function (e) { if (seq === profileSeq) { state.cardErr = e.message; render(); } });
 
     loadProducts(seq);
+    loadGroups(seq);
     if (!state.repInfo[flagKey(id)]) loadRepInfo([id]);
 
     rpc('get_customer_last_orders', { p_customer_id: id, p_limit: 20 }).then(function (rows) {
@@ -1037,6 +1257,99 @@
       if (seq !== profileSeq) return;
       state.touches = rows || []; render();
     }).catch(function (e) { if (seq === profileSeq) { state.touchesErr = e.message; render(); } });
+  }
+
+  // ── flokkaður vörulisti: gögn ────────────────────────────────────────
+  function loadGroups(seq) {
+    seq = seq || profileSeq;
+    return rpc('get_customer_product_groups_v1', { p_customer_id: state.selectedId }).then(function (r) {
+      if (seq !== profileSeq) return;
+      state.groups = r && r.doc ? r : null; state.groupsLoaded = true; state.groupsErr = ''; render();
+    }).catch(function (e) {
+      // Aukakall: falli það (t.d. SQL ekki keyrt enn) er vörulistinn óflokkaður eins og áður.
+      if (seq === profileSeq) { state.groupsLoaded = true; state.groupsErr = e.message; render(); }
+    });
+  }
+
+  function runGrouping(mode) {
+    if (!GAS_URL || state.groupBusy) return;
+    var id = state.selectedId, seq = profileSeq;
+    state.groupBusy = mode; state.gEditing = '';
+    render();
+    gas({ action: 'group_customer_products', customer_id: id, mode: mode, days: state.days })
+      .then(function (out) {
+        if (seq !== profileSeq) return;
+        state.groupBusy = '';
+        if (out && out.ok && out.data && out.data.doc) {
+          state.groups = out.data;
+          if (mode === 'group') { state.pView = 'grouped'; saveJson(PVIEW_KEY, 'grouped'); state.gOnly = ''; }
+          var left = mode === 'place' && out.unplaced ? ' ' + out.unplaced + ' fundu engan flokk.' : '';
+          toast(mode === 'place'
+            ? (out.placed ? out.placed + ' ' + (out.placed === 1 ? 'vöru' : 'vörum') + ' raðað í flokkana.' + left : 'Engin vara til að raða.')
+            : 'Vörurnar eru flokkaðar í ' + gList().length + ' flokka.');
+          return;
+        }
+        var e = out && out.error;
+        toast(e === 'too_few' ? 'Of fáar vörur til að flokka (' + out.count + ').'
+          : e === 'rate_limited' ? 'Of margar flokkanir í bili. Reyndu aftur eftir smá stund.'
+          : e === 'no_groups' ? 'Engin flokkun til að raða í. Flokkaðu vörurnar fyrst.'
+          : e === 'Unauthorized' ? 'Innskráningin rann út. Endurhlaðið síðuna.'
+          : 'Flokkun mistókst' + (e ? ': ' + e : '.'), true);
+      })
+      .catch(function () {
+        if (seq !== profileSeq) return;
+        state.groupBusy = '';
+        toast('Flokkun mistókst (net). Reyndu aftur.', true);
+      });
+  }
+
+  // Handvirkar breytingar breyta state.groups.doc á staðnum og vista svo ALLT
+  // skjalið. Vistanir fara í röð og hver ber updated_at þeirrar á undan, svo
+  // tvö hröð smell rekast ekki á, en breyting annars starfsmanns (conflict)
+  // sækir nýjustu útgáfu í stað þess að skrifa yfir hana.
+  var gSaveChain = Promise.resolve();
+  function saveGroups(okMsg) {
+    var id = state.selectedId, seq = profileSeq;
+    render();
+    gSaveChain = gSaveChain.then(function () {
+      if (seq !== profileSeq || !state.groups) return;
+      var g = state.groups;
+      return rpc('save_customer_product_groups_v1', { p_customer_id: id, p_doc: g.doc, p_base_updated_at: g.updated_at || null })
+        .then(function (r) {
+          if (seq !== profileSeq) return;
+          if (r && r.ok) {
+            state.groups.updated_at = r.updated_at; state.groups.updated_by = r.updated_by;
+            if (okMsg) toast(okMsg); else render();
+            return;
+          }
+          toast(r && r.error === 'conflict'
+            ? 'Einhver annar breytti flokkuninni rétt í þessu. Sótti nýjustu útgáfu.'
+            : 'Vistun mistókst.', true);
+          return loadGroups(seq);
+        });
+    }).catch(function (e) {
+      if (seq !== profileSeq) return;
+      toast('Vistun mistókst: ' + e.message, true);
+      return loadGroups(seq);
+    });
+  }
+
+  function gMove(sku, to) {
+    var d = gDoc();
+    if (!d || !sku) return;
+    d.items = d.items || {};
+    if (to === 'new') delete d.items[sku]; else d.items[sku] = to;
+    var p = (state.products || []).filter(function (x) { return String(x.sku == null ? '' : x.sku).trim() === sku; })[0];
+    saveGroups('„' + (p ? p.product_name : sku) + '“ fært í ' + (to === 'fees' ? 'gjöld og þjónustu' : '„' + gName(to) + '“') + '.');
+  }
+
+  function gRename(id, name) {
+    name = String(name || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    var g = gFind(id);
+    state.gEditing = ''; state.gDraft = '';
+    if (!g || !name || name === g.name) { render(); return; }
+    g.name = name;
+    saveGroups('Flokkurinn heitir nú „' + name + '“.');
   }
 
   function loadFlags() {
@@ -1420,13 +1733,24 @@
       }).catch(function () { toast('Sending mistókst (net).', true); });
   }
 
-  function exportCsv() {
+  // Í flokkaðri sýn raðast útflutningurinn eftir flokkum (í röð flokkanna),
+  // og innan flokks eins og taflan.
+  function exportList() {
     var list = visibleProducts();
+    if (!grouped()) return list;
+    var order = gList().map(function (g) { return g.id; }).concat(['new', 'fees']);
+    var out = [];
+    order.forEach(function (id) { list.forEach(function (p) { if (gOf(p) === id) out.push(p); }); });
+    return out;
+  }
+
+  function exportCsv() {
+    var list = exportList();
     var cols = ['Vörunr.', 'Vara', 'Flokkur', 'Pantanir', 'Magn', 'Eining', 'Síðast keypt', 'Síðasta verð án VSK', 'Á vef', 'Hætt að kaupa?'];
     var cell = function (v) { var s = String(v == null ? '' : v); return /[";\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     var dec = function (v) { return v == null ? '' : String(v).replace('.', ','); };
     var lines = [cols.join(';')].concat(list.map(function (p) {
-      return [p.sku, p.product_name, p.category || '', p.order_count, dec(p.total_qty), p.uom || '', p.last_bought || '',
+      return [p.sku, p.product_name, catOf(p), p.order_count, dec(p.total_qty), p.uom || '', p.last_bought || '',
         dec(p.last_unit_price), p.on_web ? 'Já' : 'Nei', p.lapsed ? 'Já' : ''].map(cell).join(';');
     }));
     var name = ((state.card && state.card.customer_name) || state.selectedId).replace(/[^\wÀ-ÿ -]+/g, '').trim();
@@ -1444,16 +1768,35 @@
     var period = state.days === 'all' ? 'Öll saga' : 'Síðustu ' + state.days + ' dagar';
     var w = window.open('', '_blank');
     if (!w) { toast('Vafrinn lokaði á nýjan glugga. Leyfðu sprettiglugga fyrir síðuna.', true); return; }
-    var rows = list.map(function (p) {
-      return '<tr><td>' + esc(p.sku) + '</td><td>' + esc(p.product_name) + '</td><td>' + esc(p.category || '') + '</td><td style="text-align:right">' + num(p.order_count) +
+    var withCat = !grouped();
+    var rowHtml = function (p) {
+      return '<tr><td>' + esc(p.sku) + '</td><td>' + esc(p.product_name) + '</td>' + (withCat ? '<td>' + esc(catOf(p)) + '</td>' : '') +
+        '<td style="text-align:right">' + num(p.order_count) +
         '</td><td style="text-align:right">' + num(p.total_qty, 2) + ' ' + esc(String(p.uom || '').toLowerCase()) + '</td><td>' + esc(fmtDate(p.last_bought)) + '</td></tr>';
-    }).join('');
-    w.document.write('<!doctype html><html lang="is"><head><meta charset="utf-8"><title>Vörulisti – ' + esc(name) + '</title>' +
+    };
+    var thead = '<thead><tr><th>Vörunr.</th><th>Vara</th>' + (withCat ? '<th>Flokkur</th>' : '') +
+      '<th style="text-align:right">Pantanir</th><th style="text-align:right">Magn</th><th>Síðast keypt</th></tr></thead>';
+    var body;
+    if (withCat) {
+      body = '<table>' + thead + '<tbody>' + list.map(rowHtml).join('') + '</tbody></table>';
+    } else {
+      // Innkaupalisti í köflum: einn kafli á flokk, óflokkaðar aftast, gjöld ekki með.
+      body = gList().map(function (g) { return { title: g.name, why: g.why, id: g.id }; })
+        .concat([{ title: 'Aðrar vörur', why: '', id: 'new' }])
+        .map(function (s) {
+          var rows = list.filter(function (p) { return gOf(p) === s.id; });
+          if (!rows.length) return '';
+          return '<h2>' + esc(s.title) + ' <span>' + rows.length + (rows.length === 1 ? ' vara' : ' vörur') + '</span></h2>' +
+            (s.why ? '<p class="why">' + esc(s.why) + '</p>' : '') +
+            '<table>' + thead + '<tbody>' + rows.map(rowHtml).join('') + '</tbody></table>';
+        }).join('');
+    }
+    w.document.write('<!doctype html><html lang="is"><head><meta charset="utf-8"><title>' + (withCat ? 'Vörulisti' : 'Innkaupalisti') + ' – ' + esc(name) + '</title>' +
       '<style>body{font:11pt/1.4 Arial,sans-serif;margin:18mm;color:#111}h1{font-size:16pt;margin:0 0 4px}p{margin:0 0 14px;color:#555}' +
-      'table{width:100%;border-collapse:collapse}th,td{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}th{font-size:9pt;text-transform:uppercase;color:#555}</style></head><body>' +
-      '<h1>Vörulisti – ' + esc(name) + '</h1><p>' + esc(kt(state.selectedId)) + ' · ' + esc(period) + ' · ' + esc(fmtDate(new Date().toISOString())) + '</p>' +
-      '<table><thead><tr><th>Vörunr.</th><th>Vara</th><th>Flokkur</th><th style="text-align:right">Pantanir</th><th style="text-align:right">Magn</th><th>Síðast keypt</th></tr></thead><tbody>' +
-      rows + '</tbody></table><script>window.onload=function(){window.print();}<\/script></body></html>');
+      'h2{font-size:13pt;margin:22px 0 2px;padding-bottom:4px;border-bottom:1.5px solid #111;break-after:avoid}h2 span{font-weight:400;font-size:10pt;color:#555}p.why{margin:4px 0 8px;font-size:10pt}' +
+      'table{width:100%;border-collapse:collapse}th,td{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}th{font-size:9pt;text-transform:uppercase;color:#555}tr{break-inside:avoid}</style></head><body>' +
+      '<h1>' + (withCat ? 'Vörulisti' : 'Innkaupalisti') + ' – ' + esc(name) + '</h1><p>' + esc(kt(state.selectedId)) + ' · ' + esc(period) + ' · ' + esc(fmtDate(new Date().toISOString())) + '</p>' +
+      body + '<script>window.onload=function(){window.print();}<\/script></body></html>');
     w.document.close();
   }
 
@@ -1514,6 +1857,29 @@
       exportCsv();
     } else if (act === 'print') {
       printList();
+    } else if (act === 'pview') {
+      state.pView = v; saveJson(PVIEW_KEY, v); state.gOnly = ''; state.gEditing = ''; render();
+    } else if (act === 'group-run') {
+      if (gDoc() && !window.confirm('Flokka vörurnar upp á nýtt? Núverandi flokkar og handvirkar breytingar víkja fyrir nýrri flokkun.')) return;
+      runGrouping('group');
+    } else if (act === 'group-place') {
+      runGrouping('place');
+    } else if (act === 'gtoggle') {
+      state.gCollapsed[v] = !state.gCollapsed[v]; render();
+    } else if (act === 'gonly') {
+      state.gOnly = state.gOnly === v ? '' : v;
+      if (state.gOnly) state.gCollapsed[v] = false;
+      render();
+    } else if (act === 'grename') {
+      var gr = gFind(v);
+      state.gEditing = v; state.gDraft = gr ? gr.name : '';
+      render();
+      var gi = document.getElementById('skv-gren');
+      if (gi) { gi.focus(); gi.select(); }
+    } else if (act === 'grename-save') {
+      gRename(v, state.gDraft);
+    } else if (act === 'grename-cancel') {
+      state.gEditing = ''; state.gDraft = ''; render();
     }
   }
 
@@ -1538,6 +1904,8 @@
       assignRep(el.value);
     } else if (act === 'days') {
       state.days = el.value; loadProducts(); render();
+    } else if (act === 'gmove') {
+      gMove(el.getAttribute('data-sku'), el.value);
     } else if (act === 'tmpl') {
       state.tmpl = el.value; state.lang = ''; render();
     } else if (act === 'lang') {
@@ -1562,6 +1930,8 @@
       state.noteDraft = el.value;
     } else if (el.id === 'skv-nwn') {
       state.notWebNote = el.value;
+    } else if (el.id === 'skv-gren') {
+      state.gDraft = el.value;
     } else if (el.id === 'skv-pf') {
       state.pFilter = el.value;
       clearTimeout(pfTimer);
@@ -1574,6 +1944,11 @@
   }
 
   function onKey(e) {
+    if (e.target && e.target.id === 'skv-gren') {
+      if (e.key === 'Enter') { e.preventDefault(); gRename(state.gEditing, e.target.value); }
+      else if (e.key === 'Escape') { state.gEditing = ''; state.gDraft = ''; render(); }
+      return;
+    }
     if (e.target && e.target.id === 'skv-q' && e.key === 'Enter') {
       clearTimeout(searchTimer);
       var r = state.results;
