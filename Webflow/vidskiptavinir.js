@@ -118,6 +118,11 @@
 
   function todayIso() { return isoDate(new Date()); }
 
+  // Sama mörk og @media-reglan fyrir síma í CSS.
+  function isNarrow() {
+    try { return !!(window.matchMedia && window.matchMedia('(max-width:760px)').matches); } catch (e) { return false; }
+  }
+
   function plusDaysIso(n) {
     var d = new Date(); d.setDate(d.getDate() + n); return isoDate(d);
   }
@@ -312,6 +317,9 @@
     groups: null, groupsLoaded: false, groupsErr: '',
     groupBusy: '',          // '' | 'group' | 'place'
     gCollapsed: { fees: true }, gOnly: '', gEditing: '', gDraft: '',
+    // Sími: opinn viðskiptavinur kemur í stað listans. true = sýna listann samt
+    // (ýtt á „← Leit“, slegið inn í leit eða skipt um flipa).
+    mList: false,
     card: null, cardErr: '',
     products: null, productsErr: '',
     orders: null, ordersErr: '',
@@ -333,7 +341,7 @@
   var CSS = [
     '#' + MOUNT_ID + '{--ink:#17211D;--ink2:#33403A;--mute:#5E6A64;--line:#E1E5E0;--line2:#EEF0EC;--bg:#F3F4F1;--card:#FFFFFF;--acc:#17614A;--acc-bg:#E8F1EC;font-family:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);background:var(--bg);font-size:15px;line-height:1.45}',
     '#' + MOUNT_ID + ' *{box-sizing:border-box}',
-    '.skv-wrap{max-width:1360px;margin:0 auto;padding:0 20px}',
+    '.skv-wrap{max-width:1920px;margin:0 auto;padding:0 20px}',
     '.skv-head{background:var(--card);border-bottom:1px solid var(--line)}',
     '.skv-head .skv-wrap{padding-top:16px;display:flex;flex-direction:column;gap:12px}',
     '.skv-toprow{display:flex;flex-wrap:wrap;gap:14px;align-items:center}',
@@ -346,7 +354,7 @@
     '.skv-tabs{display:flex;flex-wrap:wrap;gap:22px}',
     '.skv-tab{border:0;background:transparent;font:inherit;font-size:15px;font-weight:500;padding:10px 2px;cursor:pointer;color:var(--mute);border-bottom:3px solid transparent;min-height:44px}',
     '.skv-tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--acc)}',
-    '.skv-main{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start;padding-top:18px;padding-bottom:40px}',
+    '.skv-main{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;padding-top:14px;padding-bottom:32px}',
     '.skv-list{flex:1 1 360px;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}',
     '.skv-prof{flex:999 1 620px;min-width:0;display:flex;flex-direction:column;gap:16px}',
     '.skv-listhead{padding:12px 14px;border-bottom:1px solid #E6E9E5;display:flex;flex-direction:column;gap:10px}',
@@ -378,7 +386,7 @@
     '.skv-b{display:inline-block;font-size:12px;font-weight:600;padding:3px 8px;border-radius:999px;white-space:nowrap}',
     '.skv-good{background:#DCEFE4;color:#14553F}.skv-warn{background:#FCE8D4;color:#8A4A10}.skv-bad{background:#F6DEDC;color:#8E2B22}.skv-mute{background:#ECEEEA;color:#4A5550}.skv-hot{background:var(--ink);color:#fff}',
     '.skv-due{color:#8A4A10;font-weight:600}',
-    '.skv-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:14px}',
+    '.skv-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px}',
     '.skv-card0{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}',
     '.skv-ph{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:flex-start}',
     '.skv-ph h2{margin:0;font-size:22px;font-weight:700}',
@@ -391,21 +399,21 @@
     '.skv-pri{background:var(--acc);border-color:var(--acc);color:#fff}',
     '.skv-pri:hover{background:#0E4535}',
     '.skv-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}',
-    '.skv-kpi{background:#F7F8F5;border-radius:10px;padding:11px 13px;display:flex;flex-direction:column;gap:1px}',
+    '.skv-kpi{background:#F7F8F5;border-radius:10px;padding:9px 12px;display:flex;flex-direction:column;gap:1px}',
     '.skv-kpi span{font-size:12px;color:var(--mute)}',
-    '.skv-kpi strong{font-size:21px;font-weight:700;font-variant-numeric:tabular-nums}',
+    '.skv-kpi strong{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}',
     '.skv-kpi em{font-style:normal;font-size:12px;color:var(--mute)}',
-    '.skv-opp{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;border:1px solid #D9E6DE;background:#F2F8F4;border-radius:10px;padding:13px 15px}',
+    '.skv-opp{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;border:1px solid #D9E6DE;background:#F2F8F4;border-radius:10px;padding:11px 14px}',
     '.skv-opp strong{font-size:19px}',
-    '.skv-ptabs{padding:12px 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;border-bottom:1px solid #E6E9E5}',
+    '.skv-ptabs{padding:10px 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;border-bottom:1px solid #E6E9E5}',
     '.skv-ptab{border:1px solid #D5DAD5;background:#fff;font:inherit;font-size:14px;padding:7px 13px;border-radius:999px;cursor:pointer;color:var(--ink2);min-height:38px}',
     '.skv-ptab[aria-selected="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}',
     '.skv-tblwrap{overflow-x:auto}',
     '.skv-tbl{width:100%;border-collapse:collapse;font-size:14px}',
-    '.skv-tbl th{text-align:left;font-weight:600;color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.04em;padding:9px 11px;border-bottom:1px solid #D5DAD5;white-space:nowrap}',
+    '.skv-tbl th{text-align:left;font-weight:600;color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.04em;padding:8px 10px;border-bottom:1px solid #D5DAD5;white-space:nowrap}',
     '.skv-tbl th button{all:unset;cursor:pointer}',
     '.skv-tbl th button:focus-visible{outline:2px solid var(--acc)}',
-    '.skv-tbl td{padding:10px 11px;border-bottom:1px solid var(--line2);vertical-align:top}',
+    '.skv-tbl td{padding:8px 10px;border-bottom:1px solid var(--line2);vertical-align:top}',
     '.skv-tbl tr.skv-lapsed td{background:#FFF8F0}',
     '.skv-n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}',
     '.skv-touchform{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;background:#F7F8F5;border-radius:10px;padding:12px;margin:14px}',
@@ -423,19 +431,19 @@
     '.skv-seg button+button{border-left:1px solid #D5DAD5}',
     '.skv-seg button[aria-pressed="true"]{background:var(--acc-bg);color:#0E4535;font-weight:600}',
     '.skv-seg button:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}',
-    '.skv-gstat{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line2);font-size:14px;color:var(--ink2)}',
+    '.skv-gstat{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;justify-content:space-between;padding:8px 14px;border-bottom:1px solid var(--line2);font-size:14px;color:var(--ink2)}',
     '.skv-gstat .skv-btn{min-height:34px;padding:5px 11px;font-size:13px}',
     '.skv-spin{display:inline-block;width:12px;height:12px;border:2px solid #D5DAD5;border-top-color:var(--acc);border-radius:50%;animation:skvspin .8s linear infinite;margin-right:8px;vertical-align:-1px}',
     '@keyframes skvspin{to{transform:rotate(360deg)}}',
-    '.skv-gchips{display:flex;flex-wrap:wrap;gap:6px;padding:10px 14px 0}',
+    '.skv-gchips{display:flex;flex-wrap:wrap;gap:6px;padding:8px 14px 10px}',
     '.skv-gchips .skv-chip{display:inline-flex;align-items:center;gap:7px}',
     '.skv-gchips .skv-chip b{font-variant-numeric:tabular-nums}',
     '.skv-chip-warn{background:#FFF8F0;border-color:#F3D3B0}',
     '.skv-chip-mute{color:var(--mute)}',
     '.skv-meter{display:inline-block;width:38px;height:6px;border-radius:3px;background:var(--line2);overflow:hidden}',
     '.skv-meter i{display:block;height:100%;background:var(--acc)}',
-    '.skv-tbl tr.skv-grp td{background:#F7F8F5;border-bottom:1px solid #D5DAD5;padding:12px 11px}',
-    '.skv-tbl tbody+tbody tr.skv-grp td{border-top:10px solid #fff}',
+    '.skv-tbl tr.skv-grp td{background:#F7F8F5;border-bottom:1px solid #D5DAD5;padding:9px 10px}',
+    '.skv-tbl tbody+tbody tr.skv-grp td{border-top:8px solid #fff}',
     '.skv-tbl tr.skv-grp-new td{background:#FFF8F0}',
     '.skv-gh{display:flex;gap:10px;align-items:flex-start}',
     '.skv-caret{border:0;background:transparent;cursor:pointer;width:26px;height:26px;border-radius:6px;color:var(--mute);display:inline-grid;place-items:center;flex:none;padding:0}',
@@ -451,8 +459,44 @@
     '.skv-tlink{border:0;background:transparent;color:var(--acc);font:inherit;font-size:13px;font-weight:500;cursor:pointer;padding:2px}',
     '.skv-tlink:hover{text-decoration:underline}',
     '.skv-gren{font:inherit;font-size:15px;font-weight:600;padding:4px 8px;border:1px solid var(--acc);border-radius:6px;min-width:240px;color:var(--ink)}',
-    '.skv-mini{font:inherit;font-size:13px;padding:4px 6px;border:1px solid #D5DAD5;border-radius:6px;background:#fff;color:var(--ink);max-width:210px}',
+    '.skv-mini{font:inherit;font-size:13px;padding:4px 6px;border:1px solid #D5DAD5;border-radius:6px;background:#fff;color:var(--ink);max-width:150px}',
     '@media (prefers-reduced-motion:reduce){.skv-spin{animation:none}.skv-caret svg{transition:none}}',
+    // Sími (2026-11-12). Opinn viðskiptavinur kemur í stað listans, og
+    // vörutaflan verður að spjöldum: heiti efst, svo tölurnar með merkingu.
+    '.skv-back{display:none}',
+    '@media (max-width:760px){' +
+      '.skv-wrap{padding:0 12px}' +
+      '.skv-head .skv-wrap{padding-top:12px;gap:8px}' +
+      '.skv-title{font-size:19px}' +
+      '.skv-search{flex-basis:100%;min-height:42px}' +
+      '.skv-tabs{gap:16px}' +
+      '.skv-main{padding-top:10px;gap:12px}' +
+      '.skv-list,.skv-prof{flex-basis:100%}' +
+      '.skv-main.skv-sel .skv-list{display:none}' +
+      '.skv-back{display:inline-flex;align-self:flex-start}' +
+      '.skv-card{padding:14px}' +
+      '.skv-ph h2{font-size:19px}' +
+      '.skv-kpi strong{font-size:18px}' +
+      '.skv-ptabs{padding:10px 12px}' +
+      '#skv-pf{min-width:0!important;flex:1 1 140px}' +
+      '.skv-gren{min-width:0;flex:1 1 160px}' +
+      '.skv-toast{left:12px;right:12px;max-width:none}' +
+      '.skv-ptbl,.skv-ptbl tbody{display:block}' +
+      '.skv-ptbl thead{display:none}' +
+      '.skv-ptbl tr{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:10px 12px;border-bottom:1px solid var(--line2)}' +
+      '.skv-ptbl td{display:block;border:0;padding:0;background:transparent!important}' +
+      '.skv-ptbl tr.skv-lapsed{background:#FFF8F0}' +
+      '.skv-ptbl td.skv-c-name{order:-2;flex:1 1 100%;font-size:15px}' +
+      '.skv-ptbl td.skv-c-sku{order:-1;font-size:12.5px;color:var(--mute)}' +
+      '.skv-ptbl td.skv-c-cat{flex:1 1 100%;font-size:13px}' +
+      '.skv-ptbl td[data-label]{font-size:13px;color:var(--ink2);text-align:left}' +
+      '.skv-ptbl td[data-label]::before{content:attr(data-label) " ";color:var(--mute)}' +
+      '.skv-ptbl td.skv-c-move{margin-left:auto}' +
+      '.skv-ptbl tr.skv-grp{display:block;padding:0;border:0}' +
+      '.skv-ptbl tr.skv-grp td{display:block;padding:10px 12px;background:#F7F8F5!important;border-bottom:1px solid #D5DAD5}' +
+      '.skv-ptbl tr.skv-grp-new td{background:#FFF8F0!important}' +
+      '.skv-ptbl tbody+tbody tr.skv-grp td{border-top:8px solid #fff}' +
+    '}',
     '.skv-placeholder{background:var(--card);border:1px dashed #C9D0CA;border-radius:12px;padding:40px 24px;color:var(--mute);text-align:center}'
   ].join('\n');
 
@@ -469,7 +513,7 @@
 
     root.innerHTML =
       '<div class="skv-head"><div class="skv-wrap">' + renderTop() + renderTabs() + '</div></div>' +
-      '<div class="skv-wrap skv-main">' +
+      '<div class="skv-wrap skv-main' + (state.selectedId && !state.mList ? ' skv-sel' : '') + '">' +
         '<section class="skv-list" aria-label="Listi">' + renderList() + '</section>' +
         '<section class="skv-prof" aria-label="Viðskiptavinur">' + renderProfile() + '</section>' +
       '</div>' + renderToast();
@@ -742,7 +786,9 @@
     if (!state.selectedId) {
       return '<div class="skv-placeholder">Veldu viðskiptavin úr listanum eða leitaðu efst.<br>Vörunúmer í leitinni sýnir hverjir kaupa vöruna.</div>';
     }
-    return renderCard() + renderPanel();
+    // Aðeins í síma (CSS): prófíllinn kemur þar í stað listans.
+    var back = state.tab === 'work' ? 'Vinnulistinn' : state.tab === 'opp' ? 'Tækifæri' : 'Leit';
+    return '<button class="skv-btn skv-back" data-act="mlist">← ' + back + '</button>' + renderCard() + renderPanel();
   }
 
   function flagFor(id) { return state.flags[flagKey(id)] || null; }
@@ -935,7 +981,7 @@
       : '';
     var note = '<div class="skv-sub" style="padding:10px 14px">' + list.length + ' vörur' +
       (lapsed ? ' · <span class="skv-due">' + lapsed + ' keyptar reglulega en ekki nýlega</span>' : '') + ' · verð án VSK, úr síðasta reikningi</div>';
-    return busy + note + '<div class="skv-tblwrap"><table class="skv-tbl"><thead><tr>' + productHead(PCOLS) + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    return busy + note + '<div class="skv-tblwrap"><table class="skv-tbl skv-ptbl"><thead><tr>' + productHead(PCOLS) + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
   }
 
   function productHead(cols) {
@@ -952,12 +998,13 @@
       ? (p.web_url ? '<a class="skv-b skv-good" href="' + esc(p.web_url) + '" target="_blank" rel="noopener">Á vef ↗</a>' : '<span class="skv-b skv-good">Á vef</span>')
       : '<span class="skv-b skv-warn">Ekki á vef</span>';
     var last = esc(fmtDate(p.last_bought)) + (p.lapsed ? '<br><span class="skv-b skv-warn" title="Keypt reglulega en ekki í ' + esc(daysSince(p.last_bought)) + ' daga">Hætt að kaupa?</span>' : '');
-    return '<tr' + (p.lapsed ? ' class="skv-lapsed"' : '') + '><td class="skv-mono">' + esc(p.sku) + '</td><td style="font-weight:500">' + esc(p.product_name) + '</td>' +
-      (gid ? '' : '<td style="color:var(--mute)">' + esc(catOf(p) || '–') + '</td>') +
-      '<td class="skv-n">' + num(p.order_count) + '</td>' +
-      '<td class="skv-n">' + num(p.total_qty, 2) + (p.uom ? ' ' + esc(String(p.uom).toLowerCase()) : '') + '</td>' +
-      '<td>' + last + '</td><td class="skv-n">' + (p.last_unit_price != null ? num(p.last_unit_price, 0) + ' kr.' : '–') + '</td><td>' + web + '</td>' +
-      (gid ? '<td>' + moveSelect(p, gid) + '</td>' : '') + '</tr>';
+    // skv-c-* og data-label nýtast aðeins í síma, þar sem röðin verður spjald (CSS).
+    return '<tr' + (p.lapsed ? ' class="skv-lapsed"' : '') + '><td class="skv-mono skv-c-sku">' + esc(p.sku) + '</td><td class="skv-c-name" style="font-weight:500">' + esc(p.product_name) + '</td>' +
+      (gid ? '' : '<td class="skv-c-cat" style="color:var(--mute)">' + esc(catOf(p) || '–') + '</td>') +
+      '<td class="skv-n" data-label="Pantanir">' + num(p.order_count) + '</td>' +
+      '<td class="skv-n" data-label="Magn">' + num(p.total_qty, 2) + (p.uom ? ' ' + esc(String(p.uom).toLowerCase()) : '') + '</td>' +
+      '<td data-label="Síðast">' + last + '</td><td class="skv-n" data-label="Verð">' + (p.last_unit_price != null ? num(p.last_unit_price, 0) + ' kr.' : '–') + '</td><td class="skv-c-web">' + web + '</td>' +
+      (gid ? '<td class="skv-c-move">' + moveSelect(p, gid) + '</td>' : '') + '</tr>';
   }
 
   // ── flokkaður vörulisti ──────────────────────────────────────────────
@@ -1036,7 +1083,7 @@
         ' · ' + nIn + ' vörur í ' + gs.length + ' flokkum' +
         (nNew ? ' · <span class="skv-due">' + nNew + ' óflokkaðar</span>' : '') +
         (edited ? ' · breytt ' + esc(fmtDate(state.groups.updated_at)) + (state.groups.updated_by ? ' af ' + esc(personLabel(state.groups.updated_by)) : '') : '') +
-        '</span>';
+        ' · <span title="Verð án VSK, úr síðasta reikningi">verð án VSK</span></span>';
     }
     stat = '<div class="skv-gstat">' + stat +
       (GAS_URL ? '<button class="skv-btn" data-act="group-run"' + (state.groupBusy ? ' disabled' : '') + '>Flokka aftur</button>' : '') + '</div>';
@@ -1061,11 +1108,9 @@
       return '<tbody>' + groupHead(id, bk.all, open, cols.length + 1, pct(id)) + rows + '</tbody>';
     }).join('');
 
-    var note = '<div class="skv-sub" style="padding:10px 14px">' + nIn + ' vörur í flokkum' +
-      (nNew ? ' · ' + nNew + ' óflokkaðar' : '') + (nFees ? ' · ' + nFees + ' gjöld og þjónusta utan lista' : '') +
-      ' · verð án VSK, úr síðasta reikningi</div>';
-    return stat + '<div class="skv-gchips">' + chips + '</div>' + note +
-      '<div class="skv-tblwrap"><table class="skv-tbl"><thead><tr>' + productHead(cols) + '<th>Færa í</th></tr></thead>' +
+    // Engin sér talningarlína: stöðulínan og flokkahnapparnir segja það sama.
+    return stat + '<div class="skv-gchips">' + chips + '</div>' +
+      '<div class="skv-tblwrap"><table class="skv-tbl skv-ptbl"><thead><tr>' + productHead(cols) + '<th>Færa</th></tr></thead>' +
       (bodies || '<tbody><tr><td colspan="' + (cols.length + 1) + '" class="skv-empty">Engin vara passar við síuna.</td></tr></tbody>') +
       '</table></div>';
   }
@@ -1103,13 +1148,18 @@
       '<div class="skv-ghm"><div class="skv-ght">' + top + '</div>' + (why ? '<div class="skv-ghw">' + esc(why) + '</div>' : '') + '</div></div></td></tr>';
   }
 
+  // Sýnir aðeins „Færa…“: heiti flokksins stendur í hausnum fyrir ofan, og
+  // að endurtaka það í hverri röð gerði dálkinn breiðan og töfluna háværa.
+  // Núverandi flokkur er merktur ✓ og óvirkur í listanum.
   function moveSelect(p, gid) {
     var sku = String(p.sku == null ? '' : p.sku).trim();
-    var opts = (gid === 'new' ? '<option value="new" selected>Veldu flokk…</option>' : '') +
-      gList().map(function (g) {
-        return '<option value="' + esc(g.id) + '"' + (gid === g.id ? ' selected' : '') + '>' + esc(g.name) + '</option>';
-      }).join('') +
-      '<option value="fees"' + (gid === 'fees' ? ' selected' : '') + '>Ekki í innkaupalista</option>';
+    var opt = function (value, label) {
+      var cur = gid === value;
+      return '<option value="' + esc(value) + '"' + (cur ? ' disabled' : '') + '>' + (cur ? '✓ ' : '') + esc(label) + '</option>';
+    };
+    var opts = '<option value="" selected>' + (gid === 'new' ? 'Veldu flokk…' : 'Færa…') + '</option>' +
+      gList().map(function (g) { return opt(g.id, g.name); }).join('') +
+      opt('fees', 'Ekki í innkaupalista');
     return '<select class="skv-mini" data-act="gmove" data-sku="' + esc(sku) + '" aria-label="Færa ' + esc(p.product_name) + ' í flokk"' +
       (state.groupBusy ? ' disabled' : '') + '>' + opts + '</select>';
   }
@@ -1201,6 +1251,8 @@
     var seq = ++profileSeq;
     state.selectedId = id;
     state.selectedName = name || '';
+    state.mList = false;
+    if (isNarrow()) { try { window.scrollTo(0, 0); } catch (e) {} }
     state.card = null; state.cardErr = '';
     state.products = null; state.productsErr = '';
     state.orders = null; state.ordersErr = '';
@@ -1336,7 +1388,7 @@
 
   function gMove(sku, to) {
     var d = gDoc();
-    if (!d || !sku) return;
+    if (!d || !sku || !to) return;
     d.items = d.items || {};
     if (to === 'new') delete d.items[sku]; else d.items[sku] = to;
     var p = (state.products || []).filter(function (x) { return String(x.sku == null ? '' : x.sku).trim() === sku; })[0];
@@ -1807,7 +1859,7 @@
     var act = el.getAttribute('data-act'), v = el.getAttribute('data-v');
     if (el.tagName === 'SELECT' || el.tagName === 'INPUT') return;
     if (act === 'tab') {
-      state.tab = v; state.sel = {};
+      state.tab = v; state.sel = {}; state.mList = true;
       if (v === 'opp') loadOpp(state.oppChip);
       render();
     } else if (act === 'open') {
@@ -1857,6 +1909,9 @@
       exportCsv();
     } else if (act === 'print') {
       printList();
+    } else if (act === 'mlist') {
+      state.mList = true; render();
+      try { window.scrollTo(0, 0); } catch (e) {}
     } else if (act === 'pview') {
       state.pView = v; saveJson(PVIEW_KEY, v); state.gOnly = ''; state.gEditing = ''; render();
     } else if (act === 'group-run') {
@@ -1922,6 +1977,7 @@
     var el = e.target;
     if (el.id === 'skv-q') {
       state.query = el.value;
+      state.mList = true;      // sími: niðurstöðurnar sjást þótt viðskiptavinur sé opinn
       if (state.tab !== 'lookup') state.tab = 'lookup';
       clearTimeout(searchTimer);
       if (state.query.trim().length < 2) { state.results = null; render(); return; }
