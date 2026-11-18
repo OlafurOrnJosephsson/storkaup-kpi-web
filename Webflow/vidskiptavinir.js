@@ -309,6 +309,9 @@
     // Þjónustubeiðnir (get_service_requests_v1). null = ekki sótt; reqsOk
     // false = kallið féll (SQL ekki keyrt) — þá hverfur „Beiðnir“ og borðinn.
     reqs: null, reqsOk: null, reqClosed: false,
+    // Tilkynning um tilbúinn innkaupalista: { id, subject, text, confirm, busy }
+    // eða null. Drögin lifa hér svo render() þurrki þau ekki út.
+    reqMail: null, myName: '',
     oppChip: 'lhfs',        // lhfs | never_ordered | lapsing | lapsed
     oppRows: {},            // chip -> röð | 'loading' | Error
     selectedId: '',
@@ -484,6 +487,12 @@
     '.skv-reqsel{display:flex;align-items:center;padding:0 12px 0 4px}',
     '.skv-reqtog{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mute);cursor:pointer}',
     '.skv-reqtog input{width:16px;height:16px;accent-color:var(--acc)}',
+    '.skv-rqmail{display:flex;flex-direction:column;gap:10px;background:#fff;border:1px solid #F3D3B0;border-radius:10px;padding:12px}',
+    '.skv-rqmail label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mute)}',
+    '.skv-rqmail input[type=text],.skv-rqmail textarea{border:1px solid #D5DAD5;border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;width:100%}',
+    '.skv-rqmail textarea{resize:vertical;min-height:240px;line-height:1.5}',
+    '.skv-rqmail .skv-rqconf{flex-direction:row;align-items:flex-start;gap:8px;color:#8A4A10;background:#FFF8F0;border-radius:8px;padding:8px 10px}',
+    '.skv-rqmail .skv-rqconf input{width:16px;height:16px;margin-top:2px;accent-color:var(--acc)}',
     // Sími (2026-11-12). Opinn viðskiptavinur kemur í stað listans, og
     // vörutaflan verður að spjöldum: heiti efst, svo tölurnar með merkingu.
     '.skv-back{display:none}',
@@ -867,8 +876,12 @@
           (r.email ? ' frá <a href="mailto:' + esc(r.email) + '">' + esc(r.email) + '</a>' : '') + '</span>' +
           (r.newsletter === 'Já' ? '<span class="skv-b skv-mute">Vill líka fréttabréf</span>' : '') + reqTag(r) + '</div>' +
         ((why || det.repeat) ? '<div class="skv-req-n">' + esc(why) + (det.repeat ? (why ? ' ' : '') + 'Hefur sent beiðni áður.' : '') + '</div>' : '') +
-        (r.status === 'new' ? '<div class="skv-req-n">Næsta skref: „Flokka vörur“, svo PDF, og senda listann' + (r.email ? ' á ' + esc(r.email) : '') + '.</div>' : '') +
-        '<div class="skv-req-f">' + seg + (last ? '<span class="skv-sub">Síðast: ' + esc(last) + '</span>' : '') + '</div></div>';
+        (r.status === 'new' ? '<div class="skv-req-n">Næsta skref: „Flokka vörur“, setja listana inn á aðgang fyrirtækisins' +
+          (canMail(r) ? ' og „Senda tilkynningu“' : r.email ? ' og láta ' + esc(r.email) + ' vita' : '') + '.</div>' : '') +
+        '<div class="skv-req-f">' + seg +
+          (canMail(r) && !mailOpenFor(r) ? '<button class="skv-btn" data-act="req-mail-open" data-rid="' + esc(r.id) + '">Senda tilkynningu…</button>' : '') +
+          (last ? '<span class="skv-sub">Síðast: ' + esc(last) + '</span>' : '') + '</div>' +
+        (mailOpenFor(r) ? renderReqMail(r) : '') + '</div>';
     }).join('');
     if (closed.length) {
       html += '<div class="skv-reqdone">' + closed.map(function (r) {
@@ -878,6 +891,108 @@
       }).join(' · ') + '</div>';
     }
     return html;
+  }
+
+  // ── tilkynning um tilbúinn innkaupalista ─────────────────────────────
+  // Byggt á pósti Atla markaðsstjóra (nóv. 2026). Gildin sem við þekkjum
+  // fyllast út; starfsmaðurinn les yfir og breytir áður en hann sendir.
+  // Viðtakandinn er ALLTAF netfang beiðninnar — GAS sækir það sjálft
+  // (send_request_done_email, core/innkaupalistar.js).
+  function canMail(r) {
+    return !!(GAS_URL && r && r.email && r.customer_id && (r.match_kind === 'customer' || r.match_kind === 'colleague'));
+  }
+  function mailOpenFor(r) { return !!(state.reqMail && String(state.reqMail.id) === String(r.id)); }
+
+  var NUM_ACC = { 2: 'tvo', 3: 'þrjá', 4: 'fjóra', 5: 'fimm', 6: 'sex', 7: 'sjö', 8: 'átta' };
+  // Heiti flokks inni í setningu: lítill upphafsstafur nema skammstöfun (TANET).
+  function midName(s) {
+    s = String(s || '');
+    return s.length > 1 && s.charAt(1) === s.charAt(1).toLowerCase() ? s.charAt(0).toLowerCase() + s.slice(1) : s;
+  }
+  function joinIs(list) {
+    return list.length < 2 ? (list[0] || '') : list.slice(0, -1).join(', ') + ' og ' + list[list.length - 1];
+  }
+
+  function reqDraft(r) {
+    var company = (state.card && state.card.customer_name) || r.customer_name || state.selectedName || '';
+    var gs = gList();
+    var ids = {};
+    gs.forEach(function (g) { ids[g.id] = true; });
+    var nItems = (state.products || []).filter(function (p) { return ids[gOf(p)]; }).length;
+    var signer = state.myName || (state.actor ? repLabel(state.actor) : '');
+    var lines = ['Góðan daginn,', '',
+      'Samkvæmt beiðni eru innkaupalistar komnir inn á aðgang ' + company + ' á storkaup.is.'];
+    if (gs.length >= 2) {
+      var names = gs.map(function (g, i) { return i ? midName(g.name) : g.name; });
+      lines.push((nItems && nItems <= 25 ? 'Vörurnar voru ekki mjög margar, svo ég skipti þeim í ' : 'Ég skipti vörunum í ') +
+        (NUM_ACC[gs.length] || gs.length) + ' flokka: ' +
+        (gs.length === 2 ? names[0] + ' annars vegar og ' + names[1] + ' hins vegar.' : joinIs(names) + '.'));
+    } else if (gs.length === 1) {
+      lines.push('Listinn heitir „' + gs[0].name + '“.');
+    }
+    lines.push('', 'Endilega láttu mig vita ef það er eitthvað sem má bæta.', '', 'Bestu kveðjur,');
+    if (signer) lines.push(signer);
+    lines.push('Stórkaup');
+    return { subject: 'Innkaupalistar fyrir ' + company, text: lines.join('\n') };
+  }
+
+  function openReqMail(id) {
+    var r = reqById(id);
+    if (!r || !canMail(r)) return;
+    var d = reqDraft(r);
+    state.reqMail = { id: r.id, subject: d.subject, text: d.text, confirm: false, busy: false, grouped: gList().length > 0 };
+    render();
+    var t = document.getElementById('skv-rqtext');
+    if (t) t.focus();
+  }
+
+  function renderReqMail(r) {
+    var m = state.reqMail;
+    var dis = m.busy ? ' disabled' : '';
+    return '<div class="skv-rqmail" role="group" aria-label="Tilkynning">' +
+      '<div class="skv-sub">Til <b style="color:var(--ink)">' + esc(r.email) + '</b> · frá vefur@storkaup.is' +
+        (state.authEmail ? ' · svör berast á ' + esc(state.authEmail) : '') + ' · skráist í snertisöguna</div>' +
+      (m.grouped ? '' : '<div class="skv-req-n">Vörurnar eru ekki flokkaðar enn, svo drögin nefna enga flokka.</div>') +
+      (r.match_kind === 'colleague'
+        ? '<label class="skv-rqconf"><input type="checkbox" id="skv-rqconf"' + (m.confirm ? ' checked' : '') + '>' +
+          '<span>Netfangið er ekki skráð á fyrirtækið — lénið @' + esc(reqDomain(r)) + ' bendir hingað. Ég hef staðfest að ' + esc(r.email) + ' vinnur hjá fyrirtækinu.</span></label>'
+        : '') +
+      '<label>Efni<input type="text" id="skv-rqsubj" maxlength="200" value="' + esc(m.subject) + '"></label>' +
+      '<label>Texti<textarea id="skv-rqtext" maxlength="6000">' + esc(m.text) + '</textarea></label>' +
+      '<div class="skv-btns"><button class="skv-btn skv-pri" data-act="req-mail-send" data-rid="' + esc(r.id) + '"' + dis + '>' +
+        (m.busy ? 'Sendi…' : 'Senda og merkja Lokið') + '</button>' +
+        '<button class="skv-btn" data-act="req-mail-cancel"' + dis + '>Hætta við</button></div></div>';
+  }
+
+  function sendReqMail(id) {
+    var m = state.reqMail, r = reqById(id);
+    if (!m || !r || m.busy) return;
+    if (!m.subject.trim() || !m.text.trim()) { toast('Efni og texti mega ekki vera tóm.', true); return; }
+    if (r.match_kind === 'colleague' && !m.confirm) { toast('Hakaðu við að þú hafir staðfest netfangið.', true); return; }
+    if (!window.confirm('Senda tilkynninguna á ' + r.email + ' og merkja beiðnina Lokið?')) return;
+    var seq = profileSeq;
+    m.busy = true; render();
+    gas({ action: 'send_request_done_email', request_id: r.id, customer_id: state.selectedId,
+          subject: m.subject, text: m.text, confirm_colleague: !!m.confirm })
+      .then(function (out) {
+        m.busy = false;
+        if (out && out.ok) {
+          if (state.reqMail === m) state.reqMail = null;
+          toast('Sent á ' + (out.sentTo || r.email) + '.');
+          setReqStatus(r.id, 'done');
+          if (seq === profileSeq) loadTouches();
+          return;
+        }
+        var e = out && out.error;
+        toast(e === 'confirm_colleague' ? 'Staðfestu fyrst að netfangið tilheyri fyrirtækinu.'
+          : e === 'customer_mismatch' ? 'Beiðnin tilheyrir öðru fyrirtæki en því sem er opið.'
+          : e === 'not_linked' ? 'Beiðnin er ekki tengd fyrirtæki — ekki hægt að senda héðan.'
+          : e === 'rate_limited' ? 'Of margar sendingar í bili. Reyndu aftur eftir smá stund.'
+          : e === 'Unauthorized' ? 'Innskráningin rann út. Endurhlaðið síðuna.'
+          : e === 'Unknown action' ? 'Póstsendingin er ekki komin í loftið enn (ný GAS-útgáfa).'
+          : 'Sending mistókst' + (e ? ': ' + e : '.'), true);
+      })
+      .catch(function () { m.busy = false; toast('Sending mistókst (net). Reyndu aftur.', true); });
   }
 
   function reqBadge(id) {
@@ -1428,6 +1543,7 @@
     state.gCollapsed = { fees: true }; state.gOnly = ''; state.gEditing = ''; state.gDraft = '';
     state.noteDraft = ''; state.fuDraft = null;
     state.notWebOpen = false; state.notWebNote = '';
+    state.reqMail = null;
     remember(id, name);
     try {
       var u = new URL(location.href); u.searchParams.set('customer', id);
@@ -1598,6 +1714,9 @@
       if (!out || !out.ok) throw new Error('svar án ok');
       r.status = out.status; r.status_at = out.status_at; r.status_by = out.status_by;
       toast('Beiðni: ' + reqStatusLabel(r.status) + '.');
+      // Yfirlitsskjalið fær stöðuna strax, ekki í næstu klukkutímakeyrslu.
+      // Má falla: þá kemur hún þangað innan klukkutíma.
+      if (GAS_URL) gas({ action: 'service_request_sheet_sync' }).catch(function () {});
     }).catch(function (e) {
       r.status = prev;
       toast('Mistókst að breyta stöðu: ' + e.message, true);
@@ -1666,6 +1785,7 @@
       state.reps = dedupeReps(r[0]);
       var me = r[1];
       state.authEmail = me.email;
+      state.myName = me.name || '';
       // Sölumaður sem er skráður inn sem hann sjálfur er valinn sjálfkrafa,
       // og það vinnur vistað val (sem gæti verið frá öðrum á sömu tölvu).
       // Sameiginleg innskráning (t.d. umsokn@) finnur engan og handvalið gildir.
@@ -2059,6 +2179,12 @@
       render();
     } else if (act === 'req-status') {
       setReqStatus(el.getAttribute('data-rid'), v);
+    } else if (act === 'req-mail-open') {
+      openReqMail(el.getAttribute('data-rid'));
+    } else if (act === 'req-mail-cancel') {
+      state.reqMail = null; render();
+    } else if (act === 'req-mail-send') {
+      sendReqMail(el.getAttribute('data-rid'));
     } else if (act === 'req-search') {
       state.tab = 'lookup'; state.query = v || ''; state.mList = true; state.sel = {};
       runSearch();
@@ -2150,6 +2276,7 @@
     }
     if (el.id === 'skv-bulkrep') { state.bulkRep = el.value; render(); return; }
     if (el.id === 'skv-reqclosed') { state.reqClosed = el.checked; render(); return; }
+    if (el.id === 'skv-rqconf') { if (state.reqMail) state.reqMail.confirm = el.checked; return; }
     if (act === 'req-sel') { setReqStatus(el.getAttribute('data-rid'), el.value); return; }
     if (act === 'actor') {
       state.actor = el.value; saveJson(ACTOR_KEY, state.actor); render();
@@ -2186,6 +2313,10 @@
       state.notWebNote = el.value;
     } else if (el.id === 'skv-gren') {
       state.gDraft = el.value;
+    } else if (el.id === 'skv-rqsubj') {
+      if (state.reqMail) state.reqMail.subject = el.value;
+    } else if (el.id === 'skv-rqtext') {
+      if (state.reqMail) state.reqMail.text = el.value;
     } else if (el.id === 'skv-pf') {
       state.pFilter = el.value;
       clearTimeout(pfTimer);
