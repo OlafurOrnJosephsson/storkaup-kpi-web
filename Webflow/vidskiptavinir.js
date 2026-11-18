@@ -43,7 +43,8 @@
  *   list_templates, list_recipients, send_template_email,
  *   send_template_bulk („Senda vefkynningu“ í magnstikunni; webapp.js)
  *   group_customer_products („Flokka vörur“ í vörulistanum; core/product_groups.js).
- *     Claude skiptir vörunum í 2–4 flokka fyrir þennan viðskiptavin. Falli
+ *     Claude skiptir vörunum í 1–5 meginflokka fyrir þennan viðskiptavin og
+ *     skiptir flokkum með fleiri en 40 vörur (fyrirmæli Atla, 2026-11-18). Falli
  *     kallið, eða RPC-ið vanti, birtist vörulistinn óflokkaður eins og áður.
  *
  * Húsreglan: hvert kall fellur fyrir sig. Falli vörulistinn standa
@@ -876,8 +877,10 @@
           (r.email ? ' frá <a href="mailto:' + esc(r.email) + '">' + esc(r.email) + '</a>' : '') + '</span>' +
           (r.newsletter === 'Já' ? '<span class="skv-b skv-mute">Vill líka fréttabréf</span>' : '') + reqTag(r) + '</div>' +
         ((why || det.repeat) ? '<div class="skv-req-n">' + esc(why) + (det.repeat ? (why ? ' ' : '') + 'Hefur sent beiðni áður.' : '') + '</div>' : '') +
-        (r.status === 'new' ? '<div class="skv-req-n">Næsta skref: „Flokka vörur“, setja listana inn á aðgang fyrirtækisins' +
-          (canMail(r) ? ' og „Senda tilkynningu“' : r.email ? ' og láta ' + esc(r.email) + ' vita' : '') + '.</div>' : '') +
+        (r.status === 'new' ? '<div class="skv-req-n">' + (noHistory()
+          ? 'Engin kaupsaga — ekki hægt að setja saman lista. ' + (canMail(r) ? '„Senda tilkynningu“ (Engin kaupsaga) lætur vita og kynnir vefinn.' : 'Láttu ' + esc(r.email || 'viðkomandi') + ' vita.')
+          : 'Næsta skref: „Flokka vörur“, setja listana inn á aðgang fyrirtækisins' +
+            (canMail(r) ? ' og „Senda tilkynningu“' : r.email ? ' og láta ' + esc(r.email) + ' vita' : '') + '.') + '</div>' : '') +
         '<div class="skv-req-f">' + seg +
           (canMail(r) && !mailOpenFor(r) ? '<button class="skv-btn" data-act="req-mail-open" data-rid="' + esc(r.id) + '">Senda tilkynningu…</button>' : '') +
           (last ? '<span class="skv-sub">Síðast: ' + esc(last) + '</span>' : '') + '</div>' +
@@ -924,63 +927,114 @@
     return c.customer_name !== undefined && !Number(c.web_orders_365d) && !c.last_web_order;
   }
 
-  // Auð lína milli málsgreina: þjónninn (innkaupalistiMailHtml_) setur hverja
-  // í sína <p> eins og vef-onboarding, og „• “-línur verða punktalisti.
-  function reqDraft(r, withOnb) {
-    var company = (state.card && state.card.customer_name) || r.customer_name || state.selectedName || '';
-    var gs = gList();
-    var ids = {};
-    gs.forEach(function (g) { ids[g.id] = true; });
-    var nItems = (state.products || []).filter(function (p) { return ids[gOf(p)]; }).length;
+  // Engin kaupsaga yfirleitt: síðasta pöntun utan vefs og á vef eru báðar
+  // tómar (get_customer_card_v1 reiknar þær yfir alla söguna, óháð tímabili).
+  function noHistory() {
+    var c = state.card;
+    return !!c && !state.cardErr && c.customer_name !== undefined && !c.last_offline_order && !c.last_web_order &&
+      !Number(c.offline_orders_365d) && !Number(c.web_orders_365d);
+  }
+
+  // Nafnið í póstinum er nafnið sem fylgir NETFANGI beiðninnar (vefgögnin),
+  // því það er fyrirtækið sem viðtakandinn þekkir sig undir. Stemmi það ekki
+  // við nafnið á síðunni (2026-11-18: arni@gastec.is → „Gastec ehf“, en sama
+  // kennitala heitir „Sky Lagoon ehf.“ á síðunni) varar glugginn við.
+  function nameKey(s) {
+    return String(s || '').toLowerCase().replace(/\b(ehf|hf|slf|sf|ses|bs|ohf)\b\.?/g, '').replace(/[^a-z0-9áðéíóúýþæö]/g, '');
+  }
+  function reqNames(r) {
+    var card = (state.card && state.card.customer_name) || '';
+    var req = r.customer_name || '';
+    var a = nameKey(req), b = nameKey(card);
+    return { use: req || card || state.selectedName || '', card: card, req: req,
+             clash: !!(a && b && a.indexOf(b) === -1 && b.indexOf(a) === -1) };
+  }
+
+  var ONB_STEPS_LISTS = ['• Farðu á storkaup.is og skráðu þig inn', '• Opnaðu innkaupalistann og veldu magn', '• Settu í körfu og staðfestu — það er allt og sumt'];
+  var ONB_STEPS_NEW = ['• Farðu á storkaup.is og skráðu þig inn', '• Finndu vörurnar með leitinni eða í vöruflokkunum', '• Settu í körfu og staðfestu — það er allt og sumt'];
+  var ONB_HELP = 'Ef þú átt í erfiðleikum með innskráninguna eða þarft aðstoð, svaraðu þessum pósti eða hringdu í 515-1500 og við hjálpum þér af stað.';
+
+  // variant: 'lists' (listarnir tilbúnir) | 'no_history' (engin kaupsaga —
+  // byggt á pósti Atla í því tilfelli). Auð lína milli málsgreina: þjónninn
+  // (innkaupalistiMailHtml_) setur hverja í sína <p> eins og vef-onboarding,
+  // og „• “-línur verða punktalisti.
+  function reqDraft(r, withOnb, variant) {
+    var company = reqNames(r).use;
     var signer = state.myName || (state.actor ? repLabel(state.actor) : '');
-    var lines = ['Góðan daginn,', '',
-      'Samkvæmt beiðni eru innkaupalistar komnir inn á aðgang ' + company + ' á storkaup.is.'];
-    if (gs.length >= 2) {
-      var names = gs.map(function (g, i) { return i ? midName(g.name) : g.name; });
-      lines.push('', (nItems && nItems <= 25 ? 'Vörurnar voru ekki mjög margar, svo ég skipti þeim í ' : 'Ég skipti vörunum í ') +
-        (NUM_ACC[gs.length] || gs.length) + ' flokka: ' +
-        (gs.length === 2 ? names[0] + ' annars vegar og ' + names[1] + ' hins vegar.' : joinIs(names) + '.'));
-    } else if (gs.length === 1) {
-      lines.push('', 'Listinn heitir „' + gs[0].name + '“.');
+    var lines = ['Góðan daginn,', ''];
+    var subject;
+    if (variant === 'no_history') {
+      subject = 'Varðandi innkaupalista fyrir ' + company;
+      lines.push('Takk fyrir að óska eftir að við setjum saman fyrir ykkur innkaupalista.',
+        '', 'Því miður er engin kaupsaga í kerfinu hjá okkur fyrir ' + company + ', svo ég get ekki sett saman lista að svo stöddu. ' +
+          'Þegar þið hafið pantað hjá okkur í einhvern tíma setjum við gjarnan saman lista fyrir ykkur — svaraðu þá bara þessum pósti.');
+      if (withOnb) {
+        lines.push('', 'Í vefversluninni á storkaup.is sérðu þitt verð og getur pantað allan sólarhringinn, án þess að bíða eftir símtali eða tölvupósti.',
+          '', 'Svona byrjarðu í þremur skrefum:', '');
+        lines.push.apply(lines, ONB_STEPS_NEW);
+        lines.push('', ONB_HELP);
+      }
+      lines.push('', 'Endilega láttu mig vita ef ég get aðstoðað eitthvað frekar.');
+    } else {
+      subject = 'Innkaupalistar fyrir ' + company;
+      var gs = gList();
+      var ids = {};
+      gs.forEach(function (g) { ids[g.id] = true; });
+      var nItems = (state.products || []).filter(function (p) { return ids[gOf(p)]; }).length;
+      lines.push('Samkvæmt beiðni eru innkaupalistar komnir inn á aðgang ' + company + ' á storkaup.is.');
+      if (gs.length >= 2) {
+        var names = gs.map(function (g, i) { return i ? midName(g.name) : g.name; });
+        lines.push('', (nItems && nItems <= 25 ? 'Vörurnar voru ekki mjög margar, svo ég skipti þeim í ' : 'Ég skipti vörunum í ') +
+          (NUM_ACC[gs.length] || gs.length) + ' flokka: ' +
+          (gs.length === 2 ? names[0] + ' annars vegar og ' + names[1] + ' hins vegar.' : joinIs(names) + '.'));
+      } else if (gs.length === 1) {
+        lines.push('', 'Listinn heitir „' + gs[0].name + '“.');
+      }
+      if (withOnb) {
+        // Vef-onboarding (WEB_ONBOARDING_CONTENT_ í core/email.js), lagað að listunum.
+        lines.push('',
+          'Ég sé að ekki hefur enn verið pantað á vefnum hjá ykkur, svo hér er stutt kynning. Í vefversluninni sérðu þitt verð og fyrri pantanir, og af listunum er hægt að panta það sem þið kaupið reglulega á örfáum sekúndum — allan sólarhringinn, án þess að bíða eftir símtali eða tölvupósti.',
+          '', 'Svona byrjarðu í þremur skrefum:', '');
+        lines.push.apply(lines, ONB_STEPS_LISTS);
+        lines.push('', ONB_HELP);
+      }
+      lines.push('', 'Endilega láttu mig vita ef það er eitthvað sem má bæta.');
     }
-    if (withOnb) {
-      // Vef-onboarding (WEB_ONBOARDING_CONTENT_ í core/email.js), lagað að listunum.
-      lines.push('',
-        'Ég sé að ekki hefur enn verið pantað á vefnum hjá ykkur, svo hér er stutt kynning. Í vefversluninni sérðu þitt verð og fyrri pantanir, og af listunum er hægt að panta það sem þið kaupið reglulega á örfáum sekúndum — allan sólarhringinn, án þess að bíða eftir símtali eða tölvupósti.',
-        '', 'Svona byrjarðu í þremur skrefum:',
-        '', '• Farðu á storkaup.is og skráðu þig inn',
-        '• Opnaðu innkaupalistann og veldu magn',
-        '• Settu í körfu og staðfestu — það er allt og sumt',
-        '', 'Ef þú átt í erfiðleikum með innskráninguna eða þarft aðstoð, svaraðu þessum pósti eða hringdu í 515-1500 og við hjálpum þér af stað.');
-    }
-    lines.push('', 'Endilega láttu mig vita ef það er eitthvað sem má bæta.', '', 'Bestu kveðjur,');
+    lines.push('', 'Bestu kveðjur,');
     if (signer) lines.push(signer);
     lines.push('Stórkaup');
-    return { subject: 'Innkaupalistar fyrir ' + company, text: lines.join('\n') };
+    return { subject: subject, text: lines.join('\n') };
   }
 
   function openReqMail(id) {
     var r = reqById(id);
     if (!r || !canMail(r)) return;
     var onb = neverWeb();
-    var d = reqDraft(r, onb);
-    state.reqMail = { id: r.id, subject: d.subject, text: d.text, generated: d.text, withOnb: onb, neverWeb: onb,
+    var variant = noHistory() ? 'no_history' : 'lists';
+    var d = reqDraft(r, onb, variant);
+    state.reqMail = { id: r.id, subject: d.subject, text: d.text, generated: d.text, genSubject: d.subject,
+                      withOnb: onb, neverWeb: onb, variant: variant, noHistory: variant === 'no_history',
                       confirm: false, busy: false, grouped: gList().length > 0 };
     render();
     var t = document.getElementById('skv-rqtext');
     if (t) t.focus();
   }
 
-  // Hakið „Með vefkynningu“: drögin búin til upp á nýtt. Hafi textanum verið
-  // breytt er spurt fyrst, svo yfirlestur glatist ekki óvart.
-  function toggleReqOnb(on) {
+  // Hak „Með vefkynningu“ eða „Listarnir tilbúnir / Engin kaupsaga“: drögin
+  // búin til upp á nýtt. Hafi textanum verið breytt er spurt fyrst, svo
+  // yfirlestur glatist ekki óvart. Efnið fylgir aðeins ef því var ekki breytt.
+  function regenReqDraft(changes) {
     var m = state.reqMail, r = m && reqById(m.id);
     if (!m || !r) return;
     if (m.text !== m.generated && !window.confirm('Búa drögin til upp á nýtt? Breytingarnar þínar á textanum víkja.')) { render(); return; }
-    var d = reqDraft(r, on);
-    m.withOnb = on; m.text = d.text; m.generated = d.text;
+    Object.keys(changes).forEach(function (k) { m[k] = changes[k]; });
+    var d = reqDraft(r, m.withOnb, m.variant);
+    m.text = d.text; m.generated = d.text;
+    if (m.subject === m.genSubject) m.subject = d.subject;
+    m.genSubject = d.subject;
     render();
   }
+  function toggleReqOnb(on) { regenReqDraft({ withOnb: on }); }
 
   function renderReqMail(r) {
     var m = state.reqMail;
@@ -988,7 +1042,16 @@
     return '<div class="skv-rqmail" role="group" aria-label="Tilkynning">' +
       '<div class="skv-sub">Til <b style="color:var(--ink)">' + esc(r.email) + '</b> · frá vefur@storkaup.is' +
         (state.authEmail ? ' · svör berast á ' + esc(state.authEmail) : '') + ' · skráist í snertisöguna</div>' +
-      (m.grouped ? '' : '<div class="skv-req-n">Vörurnar eru ekki flokkaðar enn, svo drögin nefna enga flokka.</div>') +
+      (reqNames(r).clash
+        ? '<div class="skv-rqconf" style="display:block">Nöfnin stemma ekki: netfangið ' + esc(r.email) + ' er skráð á <b>' + esc(reqNames(r).req) +
+          '</b>, en kennitalan heitir <b>' + esc(reqNames(r).card) + '</b> hér. Drögin nota „' + esc(reqNames(r).req) +
+          '“. Athugaðu kennitöluna áður en þú sendir.</div>'
+        : '') +
+      '<div class="skv-btns"><div class="skv-seg" role="group" aria-label="Gerð pósts">' +
+        '<button type="button" data-act="req-mail-variant" data-v="lists" aria-pressed="' + (m.variant !== 'no_history') + '"' + dis + '>Listarnir tilbúnir</button>' +
+        '<button type="button" data-act="req-mail-variant" data-v="no_history" aria-pressed="' + (m.variant === 'no_history') + '"' + dis + '>Engin kaupsaga</button></div>' +
+        (m.noHistory ? '<span class="skv-sub">Engin kaupsaga fannst fyrir fyrirtækið.</span>' : '') + '</div>' +
+      (m.variant !== 'no_history' && !m.grouped ? '<div class="skv-req-n">Vörurnar eru ekki flokkaðar enn, svo drögin nefna enga flokka.</div>' : '') +
       '<label class="skv-reqtog"><input type="checkbox" id="skv-rqonb"' + (m.withOnb ? ' checked' : '') + dis + '> Með vefkynningu' +
         (m.neverWeb ? ' — fyrirtækið hefur aldrei pantað á vef' : '') + ' (skráist líka sem vefkynning)</label>' +
       (r.match_kind === 'colleague'
@@ -1011,7 +1074,8 @@
     var seq = profileSeq;
     m.busy = true; render();
     gas({ action: 'send_request_done_email', request_id: r.id, customer_id: state.selectedId,
-          subject: m.subject, text: m.text, confirm_colleague: !!m.confirm, with_onboarding: !!m.withOnb })
+          subject: m.subject, text: m.text, confirm_colleague: !!m.confirm, with_onboarding: !!m.withOnb,
+          variant: m.variant === 'no_history' ? 'no_history' : 'lists' })
       .then(function (out) {
         m.busy = false;
         if (out && out.ok) {
@@ -1363,9 +1427,10 @@
         '<button type="button" data-act="pview" data-v="list" aria-pressed="' + !grouped() + '">Listi</button>' +
         '<button type="button" data-act="pview" data-v="grouped" aria-pressed="' + grouped() + '">Flokkað</button></div>';
     }
-    if (!GAS_URL || !state.groupsLoaded || state.groupsErr || !state.products || state.products.length < 6) return '';
+    // 3 vörur: sama lágmark og PG_MIN_PRODUCTS_ í core/product_groups.js (einn flokkur er leyfður).
+    if (!GAS_URL || !state.groupsLoaded || state.groupsErr || !state.products || state.products.length < 3) return '';
     return '<button class="skv-btn" data-act="group-run"' + (state.groupBusy ? ' disabled' : '') +
-      ' title="Claude skiptir vörunum í 2–4 flokka sem passa þessum viðskiptavini">' +
+      ' title="Claude skiptir vörunum í 1–5 flokka sem passa þessum viðskiptavini, og skiptir flokkum með fleiri en 40 vörur">' +
       (state.groupBusy ? 'Flokka…' : 'Flokka vörur') + '</button>';
   }
 
@@ -1398,17 +1463,23 @@
       var warn = Array.isArray(d.warnings) && d.warnings.length ? ' title="Athugasemdir úr yfirferð: ' + esc(d.warnings.join(' ')) + '"' : '';
       stat = '<span' + warn + '>Flokkað ' + esc(fmtDate(d.grouped_at)) + ' af Claude' +
         (d.grouped_by ? ' (' + esc(personLabel(d.grouped_by)) + ')' : '') +
-        ' · ' + nIn + ' vörur í ' + gs.length + ' flokkum' +
+        ' · ' + nIn + ' vörur í ' + gs.length + (gs.length === 1 ? ' flokki' : ' flokkum') +
         (nNew ? ' · <span class="skv-due">' + nNew + ' óflokkaðar</span>' : '') +
         (edited ? ' · breytt ' + esc(fmtDate(state.groups.updated_at)) + (state.groups.updated_by ? ' af ' + esc(personLabel(state.groups.updated_by)) : '') : '') +
         ' · <span title="Verð án VSK, úr síðasta reikningi">verð án VSK</span></span>';
     }
     stat = '<div class="skv-gstat">' + stat +
-      (GAS_URL ? '<button class="skv-btn" data-act="group-run"' + (state.groupBusy ? ' disabled' : '') + '>Flokka aftur</button>' : '') + '</div>';
+      (GAS_URL ? '<button class="skv-btn" data-act="group-run"' + (state.groupBusy ? ' disabled' : '') + '>Flokka aftur</button>' : '') + '</div>' +
+      // Skýring Claude til starfsmanns (t.d. hvaða flokki var skipt vegna
+      // 40-varna hámarksins). Aðeins í flokkunum frá 2026-11-18.
+      (!state.groupBusy && d.notes ? '<div class="skv-sub" style="padding:8px 14px;border-bottom:1px solid var(--line2)">' + esc(d.notes) + '</div>' : '');
 
     var chips = gs.map(function (g) {
       var pc = pct(g.id);
-      return '<button class="skv-chip" data-act="gonly" data-v="' + esc(g.id) + '" aria-pressed="' + (state.gOnly === g.id) + '">' +
+      // Fleiri en 40 vörur: fyrirmælin segja að skipta, en gat ekki (eða handvirk færsla).
+      var big = count(g.id) > 40;
+      return '<button class="skv-chip' + (big ? ' skv-chip-warn' : '') + '" data-act="gonly" data-v="' + esc(g.id) + '" aria-pressed="' + (state.gOnly === g.id) + '"' +
+        (big ? ' title="Fleiri en 40 vörur — íhugaðu að skipta flokknum (Flokka aftur)"' : '') + '>' +
         esc(g.name) + ' <b>' + count(g.id) + '</b><span class="skv-meter" aria-hidden="true"><i style="width:' + pc + '%"></i></span>' + pc + '%</button>';
     }).join('');
     if (nNew) chips += '<button class="skv-chip skv-chip-warn" data-act="gonly" data-v="new" aria-pressed="' + (state.gOnly === 'new') + '">Óflokkaðar <b>' + nNew + '</b></button>';
@@ -2219,6 +2290,8 @@
       setReqStatus(el.getAttribute('data-rid'), v);
     } else if (act === 'req-mail-open') {
       openReqMail(el.getAttribute('data-rid'));
+    } else if (act === 'req-mail-variant') {
+      if (state.reqMail && state.reqMail.variant !== v) regenReqDraft({ variant: v });
     } else if (act === 'req-mail-cancel') {
       state.reqMail = null; render();
     } else if (act === 'req-mail-send') {
