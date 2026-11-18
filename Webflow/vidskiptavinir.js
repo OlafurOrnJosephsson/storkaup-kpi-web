@@ -486,10 +486,13 @@
     '.skv-row-static:hover{background:#fff}',
     '.skv-row-static small{white-space:normal}',
     '.skv-reqsel{display:flex;align-items:center;padding:0 12px 0 4px}',
-    '.skv-reqtog{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mute);cursor:pointer}',
+    // font-weight/margin: Webflow gerir `label` feitletrað með margin-bottom (2026-11-18).
+    '.skv-reqtog{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mute);cursor:pointer;font-weight:400;margin:0}',
     '.skv-reqtog input{width:16px;height:16px;accent-color:var(--acc)}',
     '.skv-rqmail{display:flex;flex-direction:column;gap:10px;background:#fff;border:1px solid #F3D3B0;border-radius:10px;padding:12px}',
-    '.skv-rqmail label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mute)}',
+    '.skv-rqmail label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mute);font-weight:400;margin:0}',
+    '.skv-rqmail .skv-reqtog{flex-direction:row;align-items:center;gap:8px}',
+    '.skv-rqmail select{max-width:100%;font-weight:400}',
     '.skv-rqmail input[type=text],.skv-rqmail textarea{border:1px solid #D5DAD5;border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;width:100%}',
     '.skv-rqmail textarea{resize:vertical;min-height:240px;line-height:1.5}',
     '.skv-rqmail .skv-rqconf{flex-direction:row;align-items:flex-start;gap:8px;color:#8A4A10;background:#FFF8F0;border-radius:8px;padding:8px 10px}',
@@ -1012,12 +1015,23 @@
     var onb = neverWeb();
     var variant = noHistory() ? 'no_history' : 'lists';
     var d = reqDraft(r, onb, variant);
-    state.reqMail = { id: r.id, subject: d.subject, text: d.text, generated: d.text, genSubject: d.subject,
+    var m = state.reqMail = { id: r.id, subject: d.subject, text: d.text, generated: d.text, genSubject: d.subject,
                       withOnb: onb, neverWeb: onb, variant: variant, noHistory: variant === 'no_history',
-                      confirm: false, busy: false, grouped: gList().length > 0 };
+                      confirm: false, busy: false, grouped: gList().length > 0,
+                      to: r.email, users: null };
     render();
     var t = document.getElementById('skv-rqtext');
     if (t) t.focus();
+    // Önnur skráð netföng fyrirtækisins sem má senda á í staðinn (sami listi og
+    // „Senda póst“; GAS sannreynir viðtakandann aftur við sendingu).
+    gas({ action: 'list_recipients', customer_id: r.customer_id }).then(function (out) {
+      var own = String(r.email || '').toLowerCase();
+      m.users = ((out && out.users) || []).filter(function (u) {
+        var e = String(u && u.email || '').trim().toLowerCase();
+        return e && e !== own && !/@example\.com$/.test(e);
+      });
+      if (state.reqMail === m) render();
+    }).catch(function () { m.users = []; if (state.reqMail === m) render(); });
   }
 
   // Hak „Með vefkynningu“ eða „Listarnir tilbúnir / Engin kaupsaga“: drögin
@@ -1039,9 +1053,19 @@
   function renderReqMail(r) {
     var m = state.reqMail;
     var dis = m.busy ? ' disabled' : '';
+    var own = String(r.email || '').toLowerCase();
+    var toOwn = String(m.to || '').toLowerCase() === own;
+    var toOpts = '<option value="' + esc(r.email) + '"' + (toOwn ? ' selected' : '') + '>' + esc(r.email) + ' — bað um listann' +
+        (r.match_kind === 'colleague' ? ' (ekki skráð á fyrirtækið)' : '') + '</option>' +
+      (m.users || []).map(function (u) {
+        return '<option value="' + esc(u.email) + '"' + (String(u.email).toLowerCase() === String(m.to || '').toLowerCase() ? ' selected' : '') + '>' +
+          (u.name ? esc(u.name) + ' — ' : '') + esc(u.email) + '</option>';
+      }).join('');
     return '<div class="skv-rqmail" role="group" aria-label="Tilkynning">' +
-      '<div class="skv-sub">Til <b style="color:var(--ink)">' + esc(r.email) + '</b> · frá vefur@storkaup.is' +
-        (state.authEmail ? ' · svör berast á ' + esc(state.authEmail) : '') + ' · skráist í snertisöguna</div>' +
+      '<label>Til<select id="skv-rqto" class="skv-sel"' + dis + '>' + toOpts + '</select></label>' +
+      '<div class="skv-sub">' + (m.users === null ? 'Sæki skráð netföng fyrirtækisins… · '
+          : !m.users.length ? 'Engin önnur netföng skráð á fyrirtækið · ' : '') +
+        'frá vefur@storkaup.is' + (state.authEmail ? ' · svör berast á ' + esc(state.authEmail) : '') + ' · skráist í snertisöguna</div>' +
       (reqNames(r).clash
         ? '<div class="skv-rqconf" style="display:block">Nöfnin stemma ekki: netfangið ' + esc(r.email) + ' er skráð á <b>' + esc(reqNames(r).req) +
           '</b>, en kennitalan heitir <b>' + esc(reqNames(r).card) + '</b> hér. Drögin nota „' + esc(reqNames(r).req) +
@@ -1054,7 +1078,9 @@
       (m.variant !== 'no_history' && !m.grouped ? '<div class="skv-req-n">Vörurnar eru ekki flokkaðar enn, svo drögin nefna enga flokka.</div>' : '') +
       '<label class="skv-reqtog"><input type="checkbox" id="skv-rqonb"' + (m.withOnb ? ' checked' : '') + dis + '> Með vefkynningu' +
         (m.neverWeb ? ' — fyrirtækið hefur aldrei pantað á vef' : '') + ' (skráist líka sem vefkynning)</label>' +
-      (r.match_kind === 'colleague'
+      // Staðfesting aðeins þegar sent er á óskráða netfangið sjálft; skráð
+      // netfang fyrirtækisins er þegar staðfest.
+      (r.match_kind === 'colleague' && toOwn
         ? '<label class="skv-rqconf"><input type="checkbox" id="skv-rqconf"' + (m.confirm ? ' checked' : '') + '>' +
           '<span>Netfangið er ekki skráð á fyrirtækið — lénið @' + esc(reqDomain(r)) + ' bendir hingað. Ég hef staðfest að ' + esc(r.email) + ' vinnur hjá fyrirtækinu.</span></label>'
         : '') +
@@ -1069,18 +1095,22 @@
     var m = state.reqMail, r = reqById(id);
     if (!m || !r || m.busy) return;
     if (!m.subject.trim() || !m.text.trim()) { toast('Efni og texti mega ekki vera tóm.', true); return; }
-    if (r.match_kind === 'colleague' && !m.confirm) { toast('Hakaðu við að þú hafir staðfest netfangið.', true); return; }
-    if (!window.confirm('Senda tilkynninguna á ' + r.email + ' og merkja beiðnina Lokið?')) return;
+    var to = m.to || r.email;
+    var toOwn = String(to).toLowerCase() === String(r.email || '').toLowerCase();
+    if (r.match_kind === 'colleague' && toOwn && !m.confirm) {
+      toast('Hakaðu við að þú hafir staðfest netfangið, eða veldu skráð netfang fyrirtækisins í „Til“.', true); return;
+    }
+    if (!window.confirm('Senda tilkynninguna á ' + to + ' og merkja beiðnina Lokið?')) return;
     var seq = profileSeq;
     m.busy = true; render();
-    gas({ action: 'send_request_done_email', request_id: r.id, customer_id: state.selectedId,
+    gas({ action: 'send_request_done_email', request_id: r.id, customer_id: state.selectedId, to: to,
           subject: m.subject, text: m.text, confirm_colleague: !!m.confirm, with_onboarding: !!m.withOnb,
           variant: m.variant === 'no_history' ? 'no_history' : 'lists' })
       .then(function (out) {
         m.busy = false;
         if (out && out.ok) {
           if (state.reqMail === m) state.reqMail = null;
-          toast('Sent á ' + (out.sentTo || r.email) + '.');
+          toast('Sent á ' + (out.sentTo || to) + '.');
           setReqStatus(r.id, 'done');
           if (seq === profileSeq) loadTouches();
           return;
@@ -1088,6 +1118,7 @@
         var e = out && out.error;
         toast(e === 'confirm_colleague' ? 'Staðfestu fyrst að netfangið tilheyri fyrirtækinu.'
           : e === 'customer_mismatch' ? 'Beiðnin tilheyrir öðru fyrirtæki en því sem er opið.'
+          : e === 'recipient_not_in_customer' ? 'Netfangið er ekki skráð á fyrirtækið. Veldu annað í „Til“.'
           : e === 'not_linked' ? 'Beiðnin er ekki tengd fyrirtæki — ekki hægt að senda héðan.'
           : e === 'rate_limited' ? 'Of margar sendingar í bili. Reyndu aftur eftir smá stund.'
           : e === 'Unauthorized' ? 'Innskráningin rann út. Endurhlaðið síðuna.'
@@ -2388,6 +2419,7 @@
     if (el.id === 'skv-bulkrep') { state.bulkRep = el.value; render(); return; }
     if (el.id === 'skv-reqclosed') { state.reqClosed = el.checked; render(); return; }
     if (el.id === 'skv-rqconf') { if (state.reqMail) state.reqMail.confirm = el.checked; return; }
+    if (el.id === 'skv-rqto') { if (state.reqMail) { state.reqMail.to = el.value; render(); } return; }
     if (el.id === 'skv-rqonb') { toggleReqOnb(el.checked); return; }
     if (act === 'req-sel') { setReqStatus(el.getAttribute('data-rid'), el.value); return; }
     if (act === 'actor') {
