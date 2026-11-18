@@ -887,8 +887,12 @@
       html += '<div class="skv-reqdone">' + closed.map(function (r) {
         return 'Beiðni um ' + esc(REQ_KIND[r.kind] || r.kind) + ' ' + esc(fmtDate(r.received_at)) + ': <b>' + esc(reqStatusLabel(r.status)) + '</b>' +
           (r.status_by ? ' (' + esc(personLabel(r.status_by)) + (r.status_at ? ', ' + esc(fmtDate(r.status_at)) : '') + ')' : '') +
-          ' <button class="skv-tlink" data-act="req-status" data-rid="' + esc(r.id) + '" data-v="in_progress">Opna aftur</button>';
+          ' <button class="skv-tlink" data-act="req-status" data-rid="' + esc(r.id) + '" data-v="in_progress">Opna aftur</button>' +
+          // Lokuð án pósts (t.d. merkt Lokið áður en tilkynningin var til):
+          // hægt að senda samt, án þess að opna beiðnina aftur.
+          (canMail(r) && !mailOpenFor(r) ? ' · <button class="skv-tlink" data-act="req-mail-open" data-rid="' + esc(r.id) + '">Senda tilkynningu</button>' : '');
       }).join(' · ') + '</div>';
+      closed.filter(mailOpenFor).forEach(function (r) { html += '<div class="skv-req">' + renderReqMail(r) + '</div>'; });
     }
     return html;
   }
@@ -913,7 +917,16 @@
     return list.length < 2 ? (list[0] || '') : list.slice(0, -1).join(', ') + ' og ' + list[list.length - 1];
   }
 
-  function reqDraft(r) {
+  // Sama regla og „Senda póst“ (openEmail) notar til að velja vef-onboarding:
+  // engin vefpöntun síðustu 365 daga og engin síðasta vefpöntun.
+  function neverWeb() {
+    var c = state.card || {};
+    return c.customer_name !== undefined && !Number(c.web_orders_365d) && !c.last_web_order;
+  }
+
+  // Auð lína milli málsgreina: þjónninn (innkaupalistiMailHtml_) setur hverja
+  // í sína <p> eins og vef-onboarding, og „• “-línur verða punktalisti.
+  function reqDraft(r, withOnb) {
     var company = (state.card && state.card.customer_name) || r.customer_name || state.selectedName || '';
     var gs = gList();
     var ids = {};
@@ -924,11 +937,21 @@
       'Samkvæmt beiðni eru innkaupalistar komnir inn á aðgang ' + company + ' á storkaup.is.'];
     if (gs.length >= 2) {
       var names = gs.map(function (g, i) { return i ? midName(g.name) : g.name; });
-      lines.push((nItems && nItems <= 25 ? 'Vörurnar voru ekki mjög margar, svo ég skipti þeim í ' : 'Ég skipti vörunum í ') +
+      lines.push('', (nItems && nItems <= 25 ? 'Vörurnar voru ekki mjög margar, svo ég skipti þeim í ' : 'Ég skipti vörunum í ') +
         (NUM_ACC[gs.length] || gs.length) + ' flokka: ' +
         (gs.length === 2 ? names[0] + ' annars vegar og ' + names[1] + ' hins vegar.' : joinIs(names) + '.'));
     } else if (gs.length === 1) {
-      lines.push('Listinn heitir „' + gs[0].name + '“.');
+      lines.push('', 'Listinn heitir „' + gs[0].name + '“.');
+    }
+    if (withOnb) {
+      // Vef-onboarding (WEB_ONBOARDING_CONTENT_ í core/email.js), lagað að listunum.
+      lines.push('',
+        'Ég sé að ekki hefur enn verið pantað á vefnum hjá ykkur, svo hér er stutt kynning. Í vefversluninni sérðu þitt verð og fyrri pantanir, og af listunum er hægt að panta það sem þið kaupið reglulega á örfáum sekúndum — allan sólarhringinn, án þess að bíða eftir símtali eða tölvupósti.',
+        '', 'Svona byrjarðu í þremur skrefum:',
+        '', '• Farðu á storkaup.is og skráðu þig inn',
+        '• Opnaðu innkaupalistann og veldu magn',
+        '• Settu í körfu og staðfestu — það er allt og sumt',
+        '', 'Ef þú átt í erfiðleikum með innskráninguna eða þarft aðstoð, svaraðu þessum pósti eða hringdu í 515-1500 og við hjálpum þér af stað.');
     }
     lines.push('', 'Endilega láttu mig vita ef það er eitthvað sem má bæta.', '', 'Bestu kveðjur,');
     if (signer) lines.push(signer);
@@ -939,11 +962,24 @@
   function openReqMail(id) {
     var r = reqById(id);
     if (!r || !canMail(r)) return;
-    var d = reqDraft(r);
-    state.reqMail = { id: r.id, subject: d.subject, text: d.text, confirm: false, busy: false, grouped: gList().length > 0 };
+    var onb = neverWeb();
+    var d = reqDraft(r, onb);
+    state.reqMail = { id: r.id, subject: d.subject, text: d.text, generated: d.text, withOnb: onb, neverWeb: onb,
+                      confirm: false, busy: false, grouped: gList().length > 0 };
     render();
     var t = document.getElementById('skv-rqtext');
     if (t) t.focus();
+  }
+
+  // Hakið „Með vefkynningu“: drögin búin til upp á nýtt. Hafi textanum verið
+  // breytt er spurt fyrst, svo yfirlestur glatist ekki óvart.
+  function toggleReqOnb(on) {
+    var m = state.reqMail, r = m && reqById(m.id);
+    if (!m || !r) return;
+    if (m.text !== m.generated && !window.confirm('Búa drögin til upp á nýtt? Breytingarnar þínar á textanum víkja.')) { render(); return; }
+    var d = reqDraft(r, on);
+    m.withOnb = on; m.text = d.text; m.generated = d.text;
+    render();
   }
 
   function renderReqMail(r) {
@@ -953,6 +989,8 @@
       '<div class="skv-sub">Til <b style="color:var(--ink)">' + esc(r.email) + '</b> · frá vefur@storkaup.is' +
         (state.authEmail ? ' · svör berast á ' + esc(state.authEmail) : '') + ' · skráist í snertisöguna</div>' +
       (m.grouped ? '' : '<div class="skv-req-n">Vörurnar eru ekki flokkaðar enn, svo drögin nefna enga flokka.</div>') +
+      '<label class="skv-reqtog"><input type="checkbox" id="skv-rqonb"' + (m.withOnb ? ' checked' : '') + dis + '> Með vefkynningu' +
+        (m.neverWeb ? ' — fyrirtækið hefur aldrei pantað á vef' : '') + ' (skráist líka sem vefkynning)</label>' +
       (r.match_kind === 'colleague'
         ? '<label class="skv-rqconf"><input type="checkbox" id="skv-rqconf"' + (m.confirm ? ' checked' : '') + '>' +
           '<span>Netfangið er ekki skráð á fyrirtækið — lénið @' + esc(reqDomain(r)) + ' bendir hingað. Ég hef staðfest að ' + esc(r.email) + ' vinnur hjá fyrirtækinu.</span></label>'
@@ -973,7 +1011,7 @@
     var seq = profileSeq;
     m.busy = true; render();
     gas({ action: 'send_request_done_email', request_id: r.id, customer_id: state.selectedId,
-          subject: m.subject, text: m.text, confirm_colleague: !!m.confirm })
+          subject: m.subject, text: m.text, confirm_colleague: !!m.confirm, with_onboarding: !!m.withOnb })
       .then(function (out) {
         m.busy = false;
         if (out && out.ok) {
@@ -2277,6 +2315,7 @@
     if (el.id === 'skv-bulkrep') { state.bulkRep = el.value; render(); return; }
     if (el.id === 'skv-reqclosed') { state.reqClosed = el.checked; render(); return; }
     if (el.id === 'skv-rqconf') { if (state.reqMail) state.reqMail.confirm = el.checked; return; }
+    if (el.id === 'skv-rqonb') { toggleReqOnb(el.checked); return; }
     if (act === 'req-sel') { setReqStatus(el.getAttribute('data-rid'), el.value); return; }
     if (act === 'actor') {
       state.actor = el.value; saveJson(ACTOR_KEY, state.actor); render();
