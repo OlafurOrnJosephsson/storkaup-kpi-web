@@ -30,6 +30,10 @@
  *   get_graduated_customers_v1 / ungraduate_customer_v1  útskrift af vinnulista (core/sql/priority_graduation_v1.sql)
  *   get_customer_product_groups_v1 / save_customer_product_groups_v1   flokkaður vörulisti
  *                                 (core/sql/customer_product_groups_v1.sql, 2026-11-12)
+ *   get_service_requests_v1 / set_service_request_status_v1   þjónustubeiðnir, fyrst
+ *                                 innkaupalistar úr Typeform (core/sql/service_requests_v1.sql,
+ *                                 core/innkaupalistar.js, 2026-11-18). Borði við „Flokka vörur“
+ *                                 og „Beiðnir“ í vinnulistanum; staðan býr hér, skjalið er afrit.
  * Fyrir (óbreytt):
  *   get_customer_last_orders, get_customer_priority_flags, get_active_sales_reps,
  *   set_customer_priority_flag, assign_customer_priority_rep,
@@ -301,7 +305,10 @@
     actor: loadJson(ACTOR_KEY, ''),
     actorAuto: false,       // true = fundið út frá innskráðu netfangi
     authEmail: '',
-    workChip: 'due',        // due | mine | all
+    workChip: 'due',        // due | mine | all | done | req
+    // Þjónustubeiðnir (get_service_requests_v1). null = ekki sótt; reqsOk
+    // false = kallið féll (SQL ekki keyrt) — þá hverfur „Beiðnir“ og borðinn.
+    reqs: null, reqsOk: null, reqClosed: false,
     oppChip: 'lhfs',        // lhfs | never_ordered | lapsing | lapsed
     oppRows: {},            // chip -> röð | 'loading' | Error
     selectedId: '',
@@ -461,6 +468,22 @@
     '.skv-gren{font:inherit;font-size:15px;font-weight:600;padding:4px 8px;border:1px solid var(--acc);border-radius:6px;min-width:240px;color:var(--ink)}',
     '.skv-mini{font:inherit;font-size:13px;padding:4px 6px;border:1px solid #D5DAD5;border-radius:6px;background:#fff;color:var(--ink);max-width:150px}',
     '@media (prefers-reduced-motion:reduce){.skv-spin{animation:none}.skv-caret svg{transition:none}}',
+    // Þjónustubeiðnir (2026-11-18): borði við „Flokka vörur“ og raðir í „Beiðnir“.
+    '.skv-req{display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:#FFF8F0;border-bottom:1px solid #F3D3B0}',
+    '.skv-req-h{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:14px;color:var(--ink2)}',
+    '.skv-req-h b{font-size:15px;color:var(--ink)}',
+    '.skv-req a{color:var(--acc);font-weight:500}',
+    '.skv-req-n{font-size:13.5px;color:var(--ink2)}',
+    '.skv-req-f{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}',
+    '.skv-req-f .skv-sub{font-size:12.5px}',
+    '.skv-reqdone{padding:8px 14px;font-size:13px;color:var(--mute);border-bottom:1px solid var(--line2)}',
+    '.skv-reqrow .skv-row{padding-left:14px}',
+    '.skv-row-static{cursor:default}',
+    '.skv-row-static:hover{background:#fff}',
+    '.skv-row-static small{white-space:normal}',
+    '.skv-reqsel{display:flex;align-items:center;padding:0 12px 0 4px}',
+    '.skv-reqtog{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mute);cursor:pointer}',
+    '.skv-reqtog input{width:16px;height:16px;accent-color:var(--acc)}',
     // Sími (2026-11-12). Opinn viðskiptavinur kemur í stað listans, og
     // vörutaflan verður að spjöldum: heiti efst, svo tölurnar með merkingu.
     '.skv-back{display:none}',
@@ -564,12 +587,14 @@
 
   function renderTabs() {
     var due = dueRows().length;
+    var nNew = (state.reqs || []).filter(function (r) { return r.status === 'new'; }).length;
     function tab(id, label, extra) {
       return '<button class="skv-tab" role="tab" data-act="tab" data-v="' + id + '" aria-selected="' + (state.tab === id) + '">' + label + (extra || '') + '</button>';
     }
     return '<nav class="skv-tabs" role="tablist" aria-label="Hlutar">' +
       tab('lookup', 'Fletta upp') +
-      tab('work', 'Vinnulistinn minn', due ? ' <span class="skv-b skv-warn">' + due + ' á eftir</span>' : '') +
+      tab('work', 'Vinnulistinn minn', (due ? ' <span class="skv-b skv-warn">' + due + ' á eftir</span>' : '') +
+        (nNew ? ' <span class="skv-b skv-bad">' + nNew + (nNew === 1 ? ' ný beiðni' : ' nýjar beiðnir') + '</span>' : '')) +
       tab('opp', 'Tækifæri') +
       '</nav>';
   }
@@ -669,6 +694,12 @@
     var mine = all.filter(isMine);
     var due = mine.filter(isDue);
     var done = pri.filter(function (r) { return isGrad(r) && isMine(r); });
+    // „Beiðnir“ hverfur ef kallið féll (SQL ekki keyrt), nema hún sé valin.
+    var nReq = (state.reqs || []).filter(reqOpen).length;
+    var chips = '<div class="skv-chips">' + chip('due', 'Þarf eftirfylgni', due.length) + chip('mine', state.actor ? 'Allir mínir' : 'Allir í forgangi', mine.length) +
+      chip('all', 'Allt fyrirtækið', all.length) + chip('done', 'Komnir á vef', done.length) +
+      (state.reqsOk !== false || state.workChip === 'req' ? chip('req', 'Beiðnir', nReq) : '') + '</div>';
+    if (state.workChip === 'req') return renderReqs(chips);
     var rows = state.workChip === 'due' ? due : state.workChip === 'mine' ? mine
       : state.workChip === 'done' ? done : all;
     rows = rows.slice().sort(function (a, b) {
@@ -678,7 +709,7 @@
     });
     var head = '<div class="skv-listhead"><h2>' + (state.actor ? 'Mínir í forgangi' : 'Í forgangi') + ' <span>' + rows.length + '</span></h2>' +
       (state.actor ? '' : '<div class="skv-sub">Veldu „Ég er“ efst til að sjá aðeins þína.</div>') +
-      '<div class="skv-chips">' + chip('due', 'Þarf eftirfylgni', due.length) + chip('mine', state.actor ? 'Allir mínir' : 'Allir í forgangi', mine.length) + chip('all', 'Allt fyrirtækið', all.length) + chip('done', 'Komnir á vef', done.length) + '</div>' +
+      chips +
       (state.actor ? '<div class="skv-sub">Þínir = úthlutaðir þér, eða án úthlutunar og þú pantar fyrir þá.</div>' : '') +
       (rows.length ? selAllHtml(rows.map(function (r) { return { id: r.customer_id || r.customer_family_id }; })) : '') + '</div>';
     state.visibleIds = rows.map(function (r) { return { id: r.customer_id || r.customer_family_id, name: r.customer_name || '' }; });
@@ -718,6 +749,140 @@
   function offlineRepLabel(info) {
     if (!info || !info.offline_rep_code) return '';
     return info.offline_rep ? personLabel(info.offline_rep) : info.offline_rep_code;
+  }
+
+  // ── þjónustubeiðnir (2026-11-18) ─────────────────────────────────────
+  // Ein röð per Typeform-svar (raw.service_requests). customer_id er
+  // fyrirtækið sem netfangið (eða lénið, match_kind 'colleague') bendir á;
+  // null ef beiðnin tengist engu fyrirtæki.
+  var REQ_STATUS = [
+    ['new', 'Ný', 'skv-bad'],
+    ['in_progress', 'Í vinnslu', 'skv-warn'],
+    ['done', 'Lokið', 'skv-good'],
+    ['cancelled', 'Hætt við', 'skv-mute']
+  ];
+  var REQ_KIND = { innkaupalisti: 'innkaupalista' };
+
+  function reqStatusLabel(s) { for (var i = 0; i < REQ_STATUS.length; i++) if (REQ_STATUS[i][0] === s) return REQ_STATUS[i][1]; return s || ''; }
+  function reqOpen(r) { return r && (r.status === 'new' || r.status === 'in_progress'); }
+  function reqById(id) { return (state.reqs || []).filter(function (r) { return String(r.id) === String(id); })[0] || null; }
+  // Fjölskylda = fyrstu 10 stafir kennitölu, sami lykill og
+  // raw.service_request_family_ í SQL (kt + deildarnúmer = sama fyrirtæki).
+  function famKey(v) { var k = flagKey(v); return /^\d{10,}$/.test(k) ? k.slice(0, 10) : k; }
+  function reqsFor(id) {
+    var f = famKey(id);
+    return f ? (state.reqs || []).filter(function (r) { return r.customer_family_id && r.customer_family_id === f; }) : [];
+  }
+  function reqDomain(r) { return (r.match_detail && r.match_detail.domain) || String(r.email || '').split('@')[1] || ''; }
+
+  // Hvernig netfangið tengist okkur, stutt (merki) og langt (setning).
+  function reqTag(r) {
+    var m = r.match_kind;
+    if (m === 'individual') return '<span class="skv-b skv-mute">Einstaklingur</span>';
+    if (m === 'colleague') return '<span class="skv-b skv-warn" title="Netfangið er ekki skráð hjá okkur; lénið bendir á fyrirtækið">Samstarfsmaður?</span>';
+    if (m === 'customer' || !m) return '';
+    return '<span class="skv-b skv-bad">Ekki tengt</span>';
+  }
+  function reqWhy(r) {
+    var m = r.match_kind, d = reqDomain(r), det = r.match_detail || {};
+    if (m === 'colleague') return 'Netfangið er ekki skráð á fyrirtækið, en lénið @' + d + ' bendir hingað.';
+    if (m === 'domain_multi') return 'Lénið @' + d + ' er hjá ' + (det.families || 'fleiri') + ' fyrirtækjum.';
+    if (m === 'free_mail') return 'Almennt netfang (@' + d + ') — einstaklingur eða fyrirtæki sem við þekkjum ekki.';
+    if (m === 'unknown') return 'Lénið @' + d + ' er hvergi í okkar gögnum — mögulega nýr viðskiptavinur.';
+    if (m === 'individual') return 'Einstaklingur í viðskiptum.';
+    if (m === 'no_email') return 'Ekkert netfang í svarinu.';
+    if (det.companies_for_email > 1) return 'Netfangið er hjá ' + det.companies_for_email + ' fyrirtækjum — hér það sem síðast pantaði.';
+    return '';
+  }
+
+  function reqStatusSelect(r) {
+    return '<label class="skv-reqsel"><span class="skv-sr">Staða beiðni</span><select class="skv-mini" data-act="req-sel" data-rid="' + esc(r.id) + '">' +
+      REQ_STATUS.map(function (s) { return '<option value="' + s[0] + '"' + (r.status === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('') +
+      '</select></label>';
+  }
+
+  function reqRowHtml(r) {
+    var rep = r.priority_rep ? personLabel(r.priority_rep) : (r.sales_rep_code || '');
+    var meta = esc(fmtAgo(r.received_at)) + (rep ? ' · ' + esc(rep) : '');
+    var flags = (r.newsletter === 'Já' ? ' · vill fréttabréf' : '') + (r.match_detail && r.match_detail.repeat ? ' · hefur beðið áður' : '');
+    var main;
+    if (r.customer_id) {
+      var sub = esc(r.email || '') + flags + (r.match_kind === 'colleague' ? ' · lénið bendir hingað' : '');
+      main = rowHtml(r.customer_id, r.customer_name || r.customer_id, sub, reqTag(r), meta);
+    } else {
+      // Ótengd beiðni: ekkert að opna. Netfangið er mailto, og það sem hjálpar
+      // að finna fyrirtækið (fyrirtæki á léninu, leit eftir léni) fylgir.
+      var det = r.match_detail || {};
+      var more = '';
+      if (r.match_kind === 'domain_multi' && Array.isArray(det.candidates)) {
+        more = det.candidates.slice(0, 3).map(function (c) {
+          return '<button class="skv-tlink" data-act="open" data-id="' + esc(c.customer_id) + '" data-name="' + esc(c.name || '') + '">' + esc(c.name || kt(c.customer_id)) + '</button>';
+        }).join(' ');
+      } else if (r.match_kind === 'unknown' && reqDomain(r)) {
+        var word = reqDomain(r).split('.')[0];
+        more = '<button class="skv-tlink" data-act="req-search" data-v="' + esc(word) + '">Leita að „' + esc(word) + '“</button>';
+      }
+      main = '<div class="skv-row skv-row-static"><span style="min-width:0"><b>' +
+        (r.email ? '<a href="mailto:' + esc(r.email) + '" style="color:inherit">' + esc(r.email) + '</a>' : '(ekkert netfang)') + '</b>' +
+        '<small>' + esc(reqWhy(r)) + esc(flags) + (more ? ' ' + more : '') + '</small></span>' +
+        '<span class="skv-rowr">' + reqTag(r) + '<span>' + meta + '</span></span></div>';
+    }
+    return '<div class="skv-rowwrap skv-reqrow">' + main + reqStatusSelect(r) + '</div>';
+  }
+
+  function renderReqs(chips) {
+    var all = state.reqs || [];
+    var nClosed = all.filter(function (r) { return !reqOpen(r); }).length;
+    var rows = state.reqClosed ? all.slice() : all.filter(reqOpen);
+    var rank = { 'new': 0, in_progress: 1, done: 2, cancelled: 3 };
+    rows.sort(function (a, b) {
+      return ((rank[a.status] || 0) - (rank[b.status] || 0)) || (String(b.received_at) < String(a.received_at) ? -1 : 1);
+    });
+    state.visibleIds = [];
+    var head = '<div class="skv-listhead"><h2>Beiðnir viðskiptavina <span>' + rows.length + '</span></h2>' + chips +
+      '<div class="skv-sub">Innkaupalistar úr þjónustupóstinum. Opnaðu fyrirtækið, „Flokka vörur“, sendu listann og merktu Lokið.</div>' +
+      (nClosed ? '<label class="skv-reqtog"><input type="checkbox" id="skv-reqclosed"' + (state.reqClosed ? ' checked' : '') + '> Sýna lokaðar (' + nClosed + ')</label>' : '') +
+      '</div>';
+    if (state.reqsOk === null) return head + '<div class="skv-empty">Sæki beiðnir…</div>';
+    if (state.reqsOk === false) return head + '<div class="skv-err">Náði ekki í beiðnirnar.</div>';
+    if (!rows.length) return head + '<div class="skv-empty">' + (all.length ? 'Engin opin beiðni.' : 'Engar beiðnir enn.') + '</div>';
+    return head + '<div class="skv-rows">' + rows.map(reqRowHtml).join('') + '</div>';
+  }
+
+  // Borðinn efst í vörulistanum, við „Flokka vörur“: opnar beiðnir í fullri
+  // lengd með stöðuhnöppum, lokaðar í einni línu.
+  function renderReqBanner() {
+    var list = reqsFor(state.selectedId);
+    if (!list.length) return '';
+    var open = list.filter(reqOpen), closed = list.filter(function (r) { return !reqOpen(r); });
+    var html = open.map(function (r) {
+      var why = reqWhy(r);
+      var det = r.match_detail || {};
+      var seg = '<div class="skv-seg" role="group" aria-label="Staða beiðni">' + REQ_STATUS.map(function (s) {
+        return '<button type="button" data-act="req-status" data-rid="' + esc(r.id) + '" data-v="' + s[0] + '" aria-pressed="' + (r.status === s[0]) + '">' + s[1] + '</button>';
+      }).join('') + '</div>';
+      var last = r.status_at ? reqStatusLabel(r.status) + ' · ' + (r.status_by ? personLabel(r.status_by) + ' · ' : '') + fmtAgo(r.status_at) : '';
+      return '<div class="skv-req" role="region" aria-label="Beiðni">' +
+        '<div class="skv-req-h"><b>Beiðni um ' + esc(REQ_KIND[r.kind] || r.kind) + '</b><span>móttekin ' + esc(fmtDate(r.received_at)) +
+          (r.email ? ' frá <a href="mailto:' + esc(r.email) + '">' + esc(r.email) + '</a>' : '') + '</span>' +
+          (r.newsletter === 'Já' ? '<span class="skv-b skv-mute">Vill líka fréttabréf</span>' : '') + reqTag(r) + '</div>' +
+        ((why || det.repeat) ? '<div class="skv-req-n">' + esc(why) + (det.repeat ? (why ? ' ' : '') + 'Hefur sent beiðni áður.' : '') + '</div>' : '') +
+        (r.status === 'new' ? '<div class="skv-req-n">Næsta skref: „Flokka vörur“, svo PDF, og senda listann' + (r.email ? ' á ' + esc(r.email) : '') + '.</div>' : '') +
+        '<div class="skv-req-f">' + seg + (last ? '<span class="skv-sub">Síðast: ' + esc(last) + '</span>' : '') + '</div></div>';
+    }).join('');
+    if (closed.length) {
+      html += '<div class="skv-reqdone">' + closed.map(function (r) {
+        return 'Beiðni um ' + esc(REQ_KIND[r.kind] || r.kind) + ' ' + esc(fmtDate(r.received_at)) + ': <b>' + esc(reqStatusLabel(r.status)) + '</b>' +
+          (r.status_by ? ' (' + esc(personLabel(r.status_by)) + (r.status_at ? ', ' + esc(fmtDate(r.status_at)) : '') + ')' : '') +
+          ' <button class="skv-tlink" data-act="req-status" data-rid="' + esc(r.id) + '" data-v="in_progress">Opna aftur</button>';
+      }).join(' · ') + '</div>';
+    }
+    return html;
+  }
+
+  function reqBadge(id) {
+    var n = reqsFor(id).filter(reqOpen).length;
+    return n ? '<span class="skv-b skv-bad" title="Opin beiðni — sjá efst í vörulistanum">Beiðni: innkaupalisti</span>' : '';
   }
 
   var NOT_WEB_REASONS = [
@@ -787,7 +952,7 @@
       return '<div class="skv-placeholder">Veldu viðskiptavin úr listanum eða leitaðu efst.<br>Vörunúmer í leitinni sýnir hverjir kaupa vöruna.</div>';
     }
     // Aðeins í síma (CSS): prófíllinn kemur þar í stað listans.
-    var back = state.tab === 'work' ? 'Vinnulistinn' : state.tab === 'opp' ? 'Tækifæri' : 'Leit';
+    var back = state.tab === 'work' ? (state.workChip === 'req' ? 'Beiðnir' : 'Vinnulistinn') : state.tab === 'opp' ? 'Tækifæri' : 'Leit';
     return '<button class="skv-btn skv-back" data-act="mlist">← ' + back + '</button>' + renderCard() + renderPanel();
   }
 
@@ -827,7 +992,7 @@
     var html = '<div class="skv-card">' +
       '<div class="skv-ph"><div style="display:flex;flex-direction:column;gap:6px;min-width:0">' +
         '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><h2>' + esc(name) + '</h2>' + webStatus(c) +
-          (isPri ? '<span class="skv-b skv-hot">Í forgangi</span>' : '') + notWebBadge(state.selectedId) +
+          (isPri ? '<span class="skv-b skv-hot">Í forgangi</span>' : '') + notWebBadge(state.selectedId) + reqBadge(state.selectedId) +
           (gradOf(state.selectedId) ? '<span class="skv-b skv-good" title="Pantaði sjálfur á vef eftir að hann fór í forgang">Kominn á vef ✓</span>' : '') + '</div>' +
         '<span class="skv-sub"><span class="skv-mono">' + esc(kt(state.selectedId)) + '</span>' +
           (c && c.primary_category ? ' · ' + esc(c.primary_category) : '') + fam + '</span>' +
@@ -939,7 +1104,7 @@
     var body = state.ptab === 'products' ? renderProducts() : state.ptab === 'orders' ? renderOrders() : renderTouches();
     return '<div class="skv-card0"><div class="skv-ptabs"><div class="skv-btns" role="tablist">' +
       ptab('products', 'Vörulisti') + ptab('orders', 'Síðustu pantanir') + ptab('touches', 'Snertisaga') +
-      '</div>' + tools + '</div>' + body + '</div>';
+      '</div>' + tools + '</div>' + renderReqBanner() + body + '</div>';
   }
 
   var PCOLS = [
@@ -1415,6 +1580,30 @@
     }).catch(function (e) { console.error('[vidskiptavinir] flags', e); state.flagsOk = false; render(); });
   }
 
+  // Má falla (SQL ekki keyrt): þá hverfa „Beiðnir“ og borðinn, annað stendur.
+  function loadReqs() {
+    return rpc('get_service_requests_v1', { p_kind: null, p_days: 365 }).then(function (rows) {
+      state.reqs = rows || []; state.reqsOk = true; render();
+    }).catch(function (e) { console.error('[vidskiptavinir] requests', e); state.reqsOk = false; render(); });
+  }
+
+  // Staðan breytist strax á síðunni og gengur til baka ef kallið fellur.
+  function setReqStatus(id, status) {
+    var r = reqById(id);
+    if (!r || !status || r.status === status) { render(); return; }
+    var prev = r.status;
+    r.status = status;
+    render();
+    rpc('set_service_request_status_v1', { p_id: Number(r.id), p_status: status }).then(function (out) {
+      if (!out || !out.ok) throw new Error('svar án ok');
+      r.status = out.status; r.status_at = out.status_at; r.status_by = out.status_by;
+      toast('Beiðni: ' + reqStatusLabel(r.status) + '.');
+    }).catch(function (e) {
+      r.status = prev;
+      toast('Mistókst að breyta stöðu: ' + e.message, true);
+    });
+  }
+
   // Má falla (SQL ekki keyrt): þá er enginn útskrifaður og vinnulistinn eins og áður.
   function loadGraduated() {
     return rpc('get_graduated_customers_v1', {}).then(function (rows) {
@@ -1865,7 +2054,14 @@
     } else if (act === 'open') {
       openCustomer(el.getAttribute('data-id'), el.getAttribute('data-name'));
     } else if (act === 'workchip') {
-      state.workChip = v; state.sel = {}; render();
+      state.workChip = v; state.sel = {};
+      if (v === 'req') loadReqs();
+      render();
+    } else if (act === 'req-status') {
+      setReqStatus(el.getAttribute('data-rid'), v);
+    } else if (act === 'req-search') {
+      state.tab = 'lookup'; state.query = v || ''; state.mList = true; state.sel = {};
+      runSearch();
     } else if (act === 'oppchip') {
       state.oppChip = v; state.sel = {}; loadOpp(v); render();
     } else if (act === 'bulk-priority') {
@@ -1953,6 +2149,8 @@
       render(); return;
     }
     if (el.id === 'skv-bulkrep') { state.bulkRep = el.value; render(); return; }
+    if (el.id === 'skv-reqclosed') { state.reqClosed = el.checked; render(); return; }
+    if (act === 'req-sel') { setReqStatus(el.getAttribute('data-rid'), el.value); return; }
     if (act === 'actor') {
       state.actor = el.value; saveJson(ACTOR_KEY, state.actor); render();
     } else if (act === 'rep') {
@@ -2040,6 +2238,7 @@
     render();
     loadFlags();
     loadReps();
+    loadReqs();
 
     var deep = '', tabParam = '';
     try {
@@ -2049,7 +2248,9 @@
     } catch (e) {}
     // ?tab=vinnulisti / ?tab=taekifaeri — fyrir velkomupóstinn og gömul
     // bókamerki á /kpi/forgangslisti og /kpi/activation (eytt 2026-10-15).
-    if (tabParam === 'vinnulisti' || tabParam === 'forgangslisti' || tabParam === 'work') state.tab = 'work';
+    // ?tab=beidnir — úr tilkynningarpóstinum um innkaupalista (core/innkaupalistar.js).
+    if (tabParam === 'beidnir' || tabParam === 'beidni') { state.tab = 'work'; state.workChip = 'req'; }
+    else if (tabParam === 'vinnulisti' || tabParam === 'forgangslisti' || tabParam === 'work') state.tab = 'work';
     else if (tabParam === 'taekifaeri' || tabParam === 'opp') { state.tab = 'opp'; loadOpp(state.oppChip); }
     if (deep) openCustomer(deep, '');
     else if (state.recent.length) openCustomer(state.recent[0].id, state.recent[0].name);
