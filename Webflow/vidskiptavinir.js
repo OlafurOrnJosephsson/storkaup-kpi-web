@@ -782,9 +782,18 @@
   // Fjölskylda = fyrstu 10 stafir kennitölu, sami lykill og
   // raw.service_request_family_ í SQL (kt + deildarnúmer = sama fyrirtæki).
   function famKey(v) { var k = flagKey(v); return /^\d{10,}$/.test(k) ? k.slice(0, 10) : k; }
+  // Beiðni á REIKNINGINN sem hún tengist, ekki alla fjölskylduna (2026-11-19):
+  // beiðni Íþróttahallarinnar (640169559904) á ekki að birtast með flokkun á
+  // hinum 31 reikningum Norðurþings. Hinir fá eina línu með hlekk (reqsElsewhere).
   function reqsFor(id) {
-    var f = famKey(id);
-    return f ? (state.reqs || []).filter(function (r) { return r.customer_family_id && r.customer_family_id === f; }) : [];
+    var k = flagKey(id);
+    return k ? (state.reqs || []).filter(function (r) { return r.customer_id && flagKey(r.customer_id) === k; }) : [];
+  }
+  function reqsElsewhere(id) {
+    var k = flagKey(id), f = famKey(id);
+    return f ? (state.reqs || []).filter(function (r) {
+      return reqOpen(r) && r.customer_family_id === f && r.customer_id && flagKey(r.customer_id) !== k;
+    }) : [];
   }
   function reqDomain(r) { return (r.match_detail && r.match_detail.domain) || String(r.email || '').split('@')[1] || ''; }
 
@@ -866,7 +875,15 @@
   // lengd með stöðuhnöppum, lokaðar í einni línu.
   function renderReqBanner() {
     var list = reqsFor(state.selectedId);
-    if (!list.length) return '';
+    var elsewhere = reqsElsewhere(state.selectedId);
+    var other = elsewhere.length
+      ? '<div class="skv-reqdone">' + elsewhere.map(function (r) {
+          return 'Opin beiðni um ' + esc(REQ_KIND[r.kind] || r.kind) + (r.email ? ' frá ' + esc(r.email) : '') +
+            ' á öðrum reikningi í fjölskyldunni: <button class="skv-tlink" data-act="open" data-id="' + esc(r.customer_id) + '" data-name="' + esc(r.customer_name || '') + '">' +
+            esc(r.customer_name || kt(r.customer_id)) + '</button>';
+        }).join(' · ') + '</div>'
+      : '';
+    if (!list.length) return other;
     var open = list.filter(reqOpen), closed = list.filter(function (r) { return !reqOpen(r); });
     var html = open.map(function (r) {
       var why = reqWhy(r);
@@ -900,7 +917,7 @@
       }).join(' · ') + '</div>';
       closed.filter(mailOpenFor).forEach(function (r) { html += '<div class="skv-req">' + renderReqMail(r) + '</div>'; });
     }
-    return html;
+    return html + other;
   }
 
   // ── tilkynning um tilbúinn innkaupalista ─────────────────────────────
@@ -1270,7 +1287,18 @@
       repOpts += '<option value="' + esc(f.assigned_rep_name_norm) + '" selected>' + esc(repLabel(f.assigned_rep_name_norm)) + ' (óvirkur)</option>';
     }
 
-    var fam = c && c.family_ids && c.family_ids.length > 1 ? ' · ' + c.family_ids.length + ' reikningar í fjölskyldu' : '';
+    // Undirreikningur (kt + deildarnúmer) sýnir sín eigin kaup; 10 stafa
+    // kennitalan alla fjölskylduna (scope úr get_customer_card_v1, 2026-11-19).
+    // Án scope (SQL ekki keyrt) eins og áður.
+    var famN = c && c.family_ids ? c.family_ids.length : 0;
+    var fam = '';
+    if (famN > 1) {
+      var parentId = flagKey(state.selectedId).slice(0, 10);
+      fam = c.scope === 'account'
+        ? ' · einn af ' + famN + ' reikningum í fjölskyldu · <button class="skv-tlink" data-act="open" data-id="' + esc(parentId) + '" data-name="">Sjá alla fjölskylduna</button>'
+        : c.scope === 'family' ? ' · ' + famN + ' reikningar í fjölskyldu, allir taldir með'
+        : ' · ' + famN + ' reikningar í fjölskyldu';
+    }
     var html = '<div class="skv-card">' +
       '<div class="skv-ph"><div style="display:flex;flex-direction:column;gap:6px;min-width:0">' +
         '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><h2>' + esc(name) + '</h2>' + webStatus(c) +
