@@ -956,12 +956,23 @@
   var ONB_STEPS_LISTS = ['• Farðu á storkaup.is og skráðu þig inn', '• Opnaðu innkaupalistann og veldu magn', '• Settu í körfu og staðfestu — það er allt og sumt'];
   var ONB_STEPS_NEW = ['• Farðu á storkaup.is og skráðu þig inn', '• Finndu vörurnar með leitinni eða í vöruflokkunum', '• Settu í körfu og staðfestu — það er allt og sumt'];
   var ONB_HELP = 'Ef þú átt í erfiðleikum með innskráninguna eða þarft aðstoð, svaraðu þessum pósti eða hringdu í 515-1500 og við hjálpum þér af stað.';
+  // „Rafræn innskráning“: nýr notandi á viðskiptavin sem er þegar til í BC
+  // (2026-11-19). Ekki umsókn um viðskipti — beiðnirnar hér eru frá viðskiptavinum.
+  var SIGNUP_URL = 'https://storkaup.typeform.com/rafinnskraning';
+
+  // Hefur viðtakandinn innskráningu á vefnum? Sá sem bað um: match_detail.web_user
+  // (GAS, core/innkaupalistar.js); óþekkt (eldri beiðni, samstarfsmaður) = nei.
+  // Skráður notandi úr „Til“-listanum (Magento-aðgangur) = já.
+  function recipientHasLogin(r, to) {
+    if (String(to || '').toLowerCase() !== String(r.email || '').toLowerCase()) return true;
+    return !!(r.match_detail && r.match_detail.web_user === true);
+  }
 
   // variant: 'lists' (listarnir tilbúnir) | 'no_history' (engin kaupsaga —
   // byggt á pósti Atla í því tilfelli). Auð lína milli málsgreina: þjónninn
   // (innkaupalistiMailHtml_) setur hverja í sína <p> eins og vef-onboarding,
   // og „• “-línur verða punktalisti.
-  function reqDraft(r, withOnb, variant) {
+  function reqDraft(r, withOnb, variant, withSignup) {
     var company = reqNames(r).use;
     var signer = state.myName || (state.actor ? repLabel(state.actor) : '');
     var lines = ['Góðan daginn,', ''];
@@ -971,6 +982,9 @@
       lines.push('Takk fyrir að óska eftir að við setjum saman fyrir ykkur innkaupalista.',
         '', 'Því miður er engin kaupsaga í kerfinu hjá okkur fyrir ' + company + ', svo ég get ekki sett saman lista að svo stöddu. ' +
           'Þegar þið hafið pantað hjá okkur í einhvern tíma setjum við gjarnan saman lista fyrir ykkur — svaraðu þá bara þessum pósti.');
+      if (withSignup) {
+        lines.push('', 'Ef þú ert ekki enn með innskráningu á storkaup.is geturðu sótt um hana hér: ' + SIGNUP_URL);
+      }
       if (withOnb) {
         lines.push('', 'Í vefversluninni á storkaup.is sérðu þitt verð og getur pantað allan sólarhringinn, án þess að bíða eftir símtali eða tölvupósti.',
           '', 'Svona byrjarðu í þremur skrefum:', '');
@@ -993,6 +1007,10 @@
       } else if (gs.length === 1) {
         lines.push('', 'Listinn heitir „' + gs[0].name + '“.');
       }
+      if (withSignup) {
+        lines.push('', 'Ef þú ert ekki enn með innskráningu á storkaup.is geturðu sótt um hana hér, og þá sérðu ' +
+          (gs.length === 1 ? 'listann' : 'listana') + ' um leið og hún er virk: ' + SIGNUP_URL);
+      }
       if (withOnb) {
         // Vef-onboarding (WEB_ONBOARDING_CONTENT_ í core/email.js), lagað að listunum.
         lines.push('',
@@ -1014,9 +1032,11 @@
     if (!r || !canMail(r)) return;
     var onb = neverWeb();
     var variant = noHistory() ? 'no_history' : 'lists';
-    var d = reqDraft(r, onb, variant);
+    var signup = !recipientHasLogin(r, r.email);
+    var d = reqDraft(r, onb, variant, signup);
     var m = state.reqMail = { id: r.id, subject: d.subject, text: d.text, generated: d.text, genSubject: d.subject,
                       withOnb: onb, neverWeb: onb, variant: variant, noHistory: variant === 'no_history',
+                      withSignup: signup,
                       confirm: false, busy: false, grouped: gList().length > 0,
                       to: r.email, users: null };
     render();
@@ -1042,13 +1062,25 @@
     if (!m || !r) return;
     if (m.text !== m.generated && !window.confirm('Búa drögin til upp á nýtt? Breytingarnar þínar á textanum víkja.')) { render(); return; }
     Object.keys(changes).forEach(function (k) { m[k] = changes[k]; });
-    var d = reqDraft(r, m.withOnb, m.variant);
+    var d = reqDraft(r, m.withOnb, m.variant, m.withSignup);
     m.text = d.text; m.generated = d.text;
     if (m.subject === m.genSubject) m.subject = d.subject;
     m.genSubject = d.subject;
     render();
   }
   function toggleReqOnb(on) { regenReqDraft({ withOnb: on }); }
+
+  // Nýr viðtakandi: hlekkurinn á rafræna innskráningu fylgir því hvort hann
+  // hefur innskráningu. Drögin breytast aðeins ef textanum hefur ekki verið
+  // breytt (ekkert spurt — val á viðtakanda á ekki að kalla á staðfestingu).
+  function setReqTo(to) {
+    var m = state.reqMail, r = m && reqById(m.id);
+    if (!m || !r) return;
+    m.to = to;
+    var want = !recipientHasLogin(r, to);
+    if (want !== m.withSignup && m.text === m.generated) { regenReqDraft({ withSignup: want }); return; }
+    render();
+  }
 
   function renderReqMail(r) {
     var m = state.reqMail;
@@ -1078,6 +1110,8 @@
       (m.variant !== 'no_history' && !m.grouped ? '<div class="skv-req-n">Vörurnar eru ekki flokkaðar enn, svo drögin nefna enga flokka.</div>' : '') +
       '<label class="skv-reqtog"><input type="checkbox" id="skv-rqonb"' + (m.withOnb ? ' checked' : '') + dis + '> Með vefkynningu' +
         (m.neverWeb ? ' — fyrirtækið hefur aldrei pantað á vef' : '') + ' (skráist líka sem vefkynning)</label>' +
+      '<label class="skv-reqtog"><input type="checkbox" id="skv-rqsignup"' + (m.withSignup ? ' checked' : '') + dis + '> Með hlekk á rafræna innskráningu' +
+        (recipientHasLogin(r, m.to) ? '' : ' — viðtakandinn er ekki með þekkta innskráningu á vefnum') + '</label>' +
       // Staðfesting aðeins þegar sent er á óskráða netfangið sjálft; skráð
       // netfang fyrirtækisins er þegar staðfest.
       (r.match_kind === 'colleague' && toOwn
@@ -2419,7 +2453,8 @@
     if (el.id === 'skv-bulkrep') { state.bulkRep = el.value; render(); return; }
     if (el.id === 'skv-reqclosed') { state.reqClosed = el.checked; render(); return; }
     if (el.id === 'skv-rqconf') { if (state.reqMail) state.reqMail.confirm = el.checked; return; }
-    if (el.id === 'skv-rqto') { if (state.reqMail) { state.reqMail.to = el.value; render(); } return; }
+    if (el.id === 'skv-rqto') { setReqTo(el.value); return; }
+    if (el.id === 'skv-rqsignup') { regenReqDraft({ withSignup: el.checked }); return; }
     if (el.id === 'skv-rqonb') { toggleReqOnb(el.checked); return; }
     if (act === 'req-sel') { setReqStatus(el.getAttribute('data-rid'), el.value); return; }
     if (act === 'actor') {
