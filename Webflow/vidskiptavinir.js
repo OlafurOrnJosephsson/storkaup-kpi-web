@@ -313,6 +313,8 @@
     // Tilkynning um tilbúinn innkaupalista: { id, subject, text, confirm, busy }
     // eða null. Drögin lifa hér svo render() þurrki þau ekki út.
     reqMail: null, myName: '',
+    // Handvirk tenging ótengdrar beiðni: { id, q, results, searching, err } eða null.
+    reqLink: null,
     oppChip: 'lhfs',        // lhfs | never_ordered | lapsing | lapsed
     oppRows: {},            // chip -> röð | 'loading' | Error
     selectedId: '',
@@ -486,6 +488,9 @@
     '.skv-row-static:hover{background:#fff}',
     '.skv-row-static small{white-space:normal}',
     '.skv-reqsel{display:flex;align-items:center;padding:0 12px 0 4px}',
+    '.skv-rqlink{display:flex;flex-direction:column;gap:8px;padding:10px 14px 12px;background:#F7F8F5;border-bottom:1px solid #E6E9E5}',
+    '.skv-rqlres{display:flex;flex-direction:column;gap:6px}',
+    '.skv-rqlres .skv-btn{justify-content:space-between;gap:10px;min-height:36px;font-size:13.5px;text-align:left}',
     // font-weight/margin: Webflow gerir `label` feitletrað með margin-bottom (2026-11-18).
     '.skv-reqtog{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mute);cursor:pointer;font-weight:400;margin:0}',
     '.skv-reqtog input{width:16px;height:16px;accent-color:var(--acc)}',
@@ -801,6 +806,7 @@
   function reqTag(r) {
     var m = r.match_kind;
     if (m === 'individual') return '<span class="skv-b skv-mute">Einstaklingur</span>';
+    if (m === 'manual') return '<span class="skv-b skv-good" title="Starfsmaður tengdi beiðnina við viðskiptavininn">Tengt handvirkt</span>';
     if (m === 'colleague') return '<span class="skv-b skv-warn" title="Netfangið er ekki skráð hjá okkur; lénið bendir á fyrirtækið">Samstarfsmaður?</span>';
     if (m === 'customer' || !m) return '';
     return '<span class="skv-b skv-bad">Ekki tengt</span>';
@@ -808,6 +814,8 @@
   function reqWhy(r) {
     var m = r.match_kind, d = reqDomain(r), det = r.match_detail || {};
     if (m === 'colleague') return 'Netfangið er ekki skráð á fyrirtækið, en lénið @' + d + ' bendir hingað.';
+    if (m === 'manual') return 'Tengt handvirkt' + (r.linked_by ? ' af ' + personLabel(r.linked_by) : '') +
+      (r.linked_at ? ' ' + fmtDate(r.linked_at) : '') + ' — netfangið er ekki í okkar gögnum.';
     if (m === 'domain_multi') return 'Lénið @' + d + ' er hjá ' + (det.families || 'fleiri') + ' fyrirtækjum.';
     if (m === 'free_mail') return 'Almennt netfang (@' + d + ') — einstaklingur eða fyrirtæki sem við þekkjum ekki.';
     if (m === 'unknown') return 'Lénið @' + d + ' er hvergi í okkar gögnum — mögulega nýr viðskiptavinur.';
@@ -844,12 +852,74 @@
         var word = reqDomain(r).split('.')[0];
         more = '<button class="skv-tlink" data-act="req-search" data-v="' + esc(word) + '">Leita að „' + esc(word) + '“</button>';
       }
+      // Netfangið getur verið á BC-viðskiptavinaspjaldinu, sem exportið ber
+      // ekki (2026-11-20) — þá tengir starfsmaðurinn sjálfur.
+      if (!state.reqLink || String(state.reqLink.id) !== String(r.id)) {
+        more += (more ? ' · ' : '') + '<button class="skv-tlink" data-act="req-link-open" data-rid="' + esc(r.id) + '">Tengja við viðskiptavin…</button>';
+      }
       main = '<div class="skv-row skv-row-static"><span style="min-width:0"><b>' +
         (r.email ? '<a href="mailto:' + esc(r.email) + '" style="color:inherit">' + esc(r.email) + '</a>' : '(ekkert netfang)') + '</b>' +
         '<small>' + esc(reqWhy(r)) + esc(flags) + (more ? ' ' + more : '') + '</small></span>' +
         '<span class="skv-rowr">' + reqTag(r) + '<span>' + meta + '</span></span></div>';
     }
-    return '<div class="skv-rowwrap skv-reqrow">' + main + reqStatusSelect(r) + '</div>';
+    return '<div class="skv-rowwrap skv-reqrow">' + main + reqStatusSelect(r) + '</div>' +
+      (state.reqLink && String(state.reqLink.id) === String(r.id) ? renderReqLink(r) : '');
+  }
+
+  // ── handvirk tenging beiðnar (2026-11-20) ────────────────────────────
+  function renderReqLink(r) {
+    var L = state.reqLink;
+    var res = L.results;
+    var list = '';
+    if (L.searching) list = '<div class="skv-sub">Leita…</div>';
+    else if (res && res.length) {
+      list = '<div class="skv-rqlres">' + res.slice(0, 8).map(function (c) {
+        return '<button class="skv-btn" data-act="req-link-pick" data-rid="' + esc(r.id) + '" data-cid="' + esc(c.customer_id) + '" data-name="' + esc(c.customer_name || '') + '">' +
+          '<span>' + esc(c.customer_name || c.customer_id) + '</span><span class="skv-mono skv-sub">' + esc(kt(c.customer_id)) + '</span></button>';
+      }).join('') + '</div>';
+    } else if (res && L.q.trim().length >= 2) list = '<div class="skv-sub">Ekkert fannst.</div>';
+    return '<div class="skv-rqlink" role="group" aria-label="Tengja beiðni">' +
+      '<span class="skv-sub">Tengja beiðni frá <b>' + esc(r.email || '?') + '</b> við viðskiptavin — t.d. ef netfangið finnst í BC:</span>' +
+      '<label class="skv-sr" for="skv-rqlq">Leita að viðskiptavini</label>' +
+      '<input id="skv-rqlq" class="skv-sel" type="search" autocomplete="off" placeholder="Nafn eða kennitala viðskiptavinarins…" value="' + esc(L.q) + '">' +
+      (L.err ? '<div class="skv-err">' + esc(L.err) + '</div>' : '') + list +
+      '<div><button class="skv-tlink" data-act="req-link-cancel">Hætta við</button></div></div>';
+  }
+
+  var reqLinkTimer = null, reqLinkSeq = 0;
+  function reqLinkSearch() {
+    var L = state.reqLink;
+    if (!L) return;
+    var q = L.q.trim();
+    if (q.length < 2) { L.results = null; L.searching = false; render(); return; }
+    var seq = ++reqLinkSeq;
+    L.searching = true; render();
+    rpc('search_customers_v1', { p_q: q, p_limit: 8 }).then(function (rows) {
+      if (seq !== reqLinkSeq || state.reqLink !== L) return;
+      L.searching = false; L.results = rows || []; L.err = ''; render();
+    }).catch(function (e) {
+      if (seq !== reqLinkSeq || state.reqLink !== L) return;
+      L.searching = false; L.results = []; L.err = 'Leit mistókst: ' + e.message; render();
+    });
+  }
+
+  // cid null = aftengja (pörun GAS tekur aftur við í næstu keyrslu).
+  function linkReq(id, cid, name) {
+    var r = reqById(id);
+    if (!r) return;
+    var msg = cid
+      ? 'Tengja beiðni frá ' + (r.email || '?') + ' við ' + (name || kt(cid)) + ' (' + kt(cid) + ')?'
+      : 'Aftengja beiðni frá ' + (r.email || '?') + ' frá ' + (r.customer_name || kt(r.customer_id)) + '?';
+    if (!window.confirm(msg)) return;
+    rpc('link_service_request_v1', { p_id: Number(r.id), p_customer_id: cid || null, p_customer_name: name || null }).then(function (out) {
+      if (!out || !out.ok) throw new Error('svar án ok');
+      r.customer_id = out.customer_id; r.customer_family_id = out.customer_family_id;
+      r.customer_name = out.customer_name; r.match_kind = out.match_kind;
+      r.linked_by = out.linked_by; r.linked_at = out.linked_at;
+      state.reqLink = null;
+      toast(cid ? 'Tengt við ' + (name || kt(cid)) + '. Opnaðu fyrirtækið til að flokka og senda.' : 'Beiðnin aftengd.');
+      if (GAS_URL) gas({ action: 'service_request_sheet_sync' }).catch(function () {});
+    }).catch(function (e) { toast('Mistókst: ' + e.message, true); });
   }
 
   function renderReqs(chips) {
@@ -896,7 +966,8 @@
         '<div class="skv-req-h"><b>Beiðni um ' + esc(REQ_KIND[r.kind] || r.kind) + '</b><span>móttekin ' + esc(fmtDate(r.received_at)) +
           (r.email ? ' frá <a href="mailto:' + esc(r.email) + '">' + esc(r.email) + '</a>' : '') + '</span>' +
           (r.newsletter === 'Já' ? '<span class="skv-b skv-mute">Vill líka fréttabréf</span>' : '') + reqTag(r) + '</div>' +
-        ((why || det.repeat) ? '<div class="skv-req-n">' + esc(why) + (det.repeat ? (why ? ' ' : '') + 'Hefur sent beiðni áður.' : '') + '</div>' : '') +
+        ((why || det.repeat) ? '<div class="skv-req-n">' + esc(why) + (det.repeat ? (why ? ' ' : '') + 'Hefur sent beiðni áður.' : '') +
+          (r.match_kind === 'manual' ? ' <button class="skv-tlink" data-act="req-unlink" data-rid="' + esc(r.id) + '">Aftengja</button>' : '') + '</div>' : '') +
         (r.status === 'new' ? '<div class="skv-req-n">' + (noHistory()
           ? 'Engin kaupsaga — ekki hægt að setja saman lista. ' + (canMail(r) ? '„Senda tilkynningu“ (Engin kaupsaga) lætur vita og kynnir vefinn.' : 'Láttu ' + esc(r.email || 'viðkomandi') + ' vita.')
           : 'Næsta skref: „Flokka vörur“, setja listana inn á aðgang fyrirtækisins' +
@@ -926,7 +997,8 @@
   // Viðtakandinn er ALLTAF netfang beiðninnar — GAS sækir það sjálft
   // (send_request_done_email, core/innkaupalistar.js).
   function canMail(r) {
-    return !!(GAS_URL && r && r.email && r.customer_id && (r.match_kind === 'customer' || r.match_kind === 'colleague'));
+    return !!(GAS_URL && r && r.email && r.customer_id &&
+      (r.match_kind === 'customer' || r.match_kind === 'colleague' || r.match_kind === 'manual'));
   }
   function mailOpenFor(r) { return !!(state.reqMail && String(state.reqMail.id) === String(r.id)); }
 
@@ -2383,6 +2455,17 @@
       setReqStatus(el.getAttribute('data-rid'), v);
     } else if (act === 'req-mail-open') {
       openReqMail(el.getAttribute('data-rid'));
+    } else if (act === 'req-link-open') {
+      state.reqLink = { id: el.getAttribute('data-rid'), q: '', results: null, searching: false, err: '' };
+      render();
+      var lq = document.getElementById('skv-rqlq');
+      if (lq) lq.focus();
+    } else if (act === 'req-link-cancel') {
+      state.reqLink = null; render();
+    } else if (act === 'req-link-pick') {
+      linkReq(el.getAttribute('data-rid'), el.getAttribute('data-cid'), el.getAttribute('data-name'));
+    } else if (act === 'req-unlink') {
+      linkReq(el.getAttribute('data-rid'), null, null);
     } else if (act === 'req-mail-variant') {
       if (state.reqMail && state.reqMail.variant !== v) regenReqDraft({ variant: v });
     } else if (act === 'req-mail-cancel') {
@@ -2520,6 +2603,12 @@
       state.notWebNote = el.value;
     } else if (el.id === 'skv-gren') {
       state.gDraft = el.value;
+    } else if (el.id === 'skv-rqlq') {
+      if (state.reqLink) {
+        state.reqLink.q = el.value;
+        clearTimeout(reqLinkTimer);
+        reqLinkTimer = setTimeout(reqLinkSearch, 250);
+      }
     } else if (el.id === 'skv-rqsubj') {
       if (state.reqMail) state.reqMail.subject = el.value;
     } else if (el.id === 'skv-rqtext') {
