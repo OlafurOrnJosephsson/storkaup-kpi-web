@@ -857,13 +857,18 @@
       if (!state.reqLink || String(state.reqLink.id) !== String(r.id)) {
         more += (more ? ' · ' : '') + '<button class="skv-tlink" data-act="req-link-open" data-rid="' + esc(r.id) + '">Tengja við viðskiptavin…</button>';
       }
+      // Einstaklingar/einyrkjar finnast ekki (persónuvernd): svarað beint.
+      if (canReply(r) && !mailOpenFor(r)) {
+        more += ' · <button class="skv-tlink" data-act="req-mail-open" data-rid="' + esc(r.id) + '">Senda svar…</button>';
+      }
       main = '<div class="skv-row skv-row-static"><span style="min-width:0"><b>' +
         (r.email ? '<a href="mailto:' + esc(r.email) + '" style="color:inherit">' + esc(r.email) + '</a>' : '(ekkert netfang)') + '</b>' +
         '<small>' + esc(reqWhy(r)) + esc(flags) + (more ? ' ' + more : '') + '</small></span>' +
         '<span class="skv-rowr">' + reqTag(r) + '<span>' + meta + '</span></span></div>';
     }
     return '<div class="skv-rowwrap skv-reqrow">' + main + reqStatusSelect(r) + '</div>' +
-      (state.reqLink && String(state.reqLink.id) === String(r.id) ? renderReqLink(r) : '');
+      (state.reqLink && String(state.reqLink.id) === String(r.id) ? renderReqLink(r) : '') +
+      (!r.customer_id && mailOpenFor(r) ? '<div class="skv-req">' + renderReqMail(r) + '</div>' : '');
   }
 
   // ── handvirk tenging beiðnar (2026-11-20) ────────────────────────────
@@ -877,7 +882,11 @@
         return '<button class="skv-btn" data-act="req-link-pick" data-rid="' + esc(r.id) + '" data-cid="' + esc(c.customer_id) + '" data-name="' + esc(c.customer_name || '') + '">' +
           '<span>' + esc(c.customer_name || c.customer_id) + '</span><span class="skv-mono skv-sub">' + esc(kt(c.customer_id)) + '</span></button>';
       }).join('') + '</div>';
-    } else if (res && L.q.trim().length >= 2) list = '<div class="skv-sub">Ekkert fannst.</div>';
+    } else if (res && L.q.trim().length >= 2) {
+      list = '<div class="skv-sub">Ekkert fannst. Einstaklingar og einyrkjar á eigin kennitölu eru ekki í gögnunum (persónuvernd) — ' +
+        'gerðu listann í BC og svaraðu með „Senda svar…“.' +
+        (canReply(r) ? ' <button class="skv-tlink" data-act="req-mail-open" data-rid="' + esc(r.id) + '">Senda svar…</button>' : '') + '</div>';
+    }
     return '<div class="skv-rqlink" role="group" aria-label="Tengja beiðni">' +
       '<span class="skv-sub">Tengja beiðni frá <b>' + esc(r.email || '?') + '</b> við viðskiptavin — t.d. ef netfangið finnst í BC:</span>' +
       '<label class="skv-sr" for="skv-rqlq">Leita að viðskiptavini</label>' +
@@ -1061,7 +1070,52 @@
   // byggt á pósti Atla í því tilfelli). Auð lína milli málsgreina: þjónninn
   // (innkaupalistiMailHtml_) setur hverja í sína <p> eins og vef-onboarding,
   // og „• “-línur verða punktalisti.
+  // Beint svar við ótengdri beiðni (2026-11-20): einstaklingar og einyrkjar á
+  // eigin kennitölu eru ekki í KPI-gögnunum (privacy_individuals_v1.sql), svo
+  // listinn er gerður í BC og svarað hér. Hvorki nafn fyrirtækis, flokkar né
+  // spjald opna viðskiptavinarins koma við sögu — þau eiga við annan.
+  // variant: 'ask' (fyrir hvaða fyrirtæki?) | 'lists' | 'no_history'.
+  function reqDraftUnlinked(r, withOnb, variant, withSignup) {
+    var signer = state.myName || (state.actor ? repLabel(state.actor) : '');
+    var lines = ['Góðan daginn,', ''];
+    var subject;
+    var steps = ONB_STEPS_NEW;
+    if (variant === 'lists') {
+      subject = 'Innkaupalistarnir þínir eru tilbúnir';
+      steps = ONB_STEPS_LISTS;
+      lines.push('Samkvæmt beiðni eru innkaupalistar komnir inn á aðganginn þinn á storkaup.is.');
+      if (withSignup) lines.push('', 'Ef þú ert ekki enn með innskráningu á storkaup.is geturðu sótt um hana hér, og þá sérðu listana um leið og hún er virk: ' + SIGNUP_URL);
+    } else if (variant === 'no_history') {
+      subject = 'Varðandi innkaupalista';
+      lines.push('Takk fyrir að óska eftir að við setjum saman fyrir ykkur innkaupalista.',
+        '', 'Því miður er engin kaupsaga í kerfinu hjá okkur fyrir þetta netfang, svo ég get ekki sett saman lista að svo stöddu. ' +
+          'Þegar þið hafið pantað hjá okkur í einhvern tíma setjum við gjarnan saman lista fyrir ykkur — svaraðu þá bara þessum pósti.');
+      if (withSignup) lines.push('', 'Ef þú ert ekki enn með innskráningu á storkaup.is geturðu sótt um hana hér: ' + SIGNUP_URL);
+    } else {
+      subject = 'Varðandi beiðni um innkaupalista';
+      lines.push('Takk fyrir að óska eftir að við setjum saman fyrir ykkur innkaupalista.',
+        '', 'Við fundum ekki í hvaða fyrirtæki netfangið ' + (r.email || '') + ' pantar fyrir hjá okkur. ' +
+          'Ef þú svarar þessum pósti með nafni fyrirtækisins eða kennitölu setjum við listann saman fyrir ykkur.');
+      if (withSignup) lines.push('', 'Ef þú ert ekki enn með innskráningu á storkaup.is geturðu sótt um hana hér: ' + SIGNUP_URL);
+    }
+    if (withOnb) {
+      lines.push('', 'Í vefversluninni á storkaup.is sérðu þitt verð og getur pantað allan sólarhringinn, án þess að bíða eftir símtali eða tölvupósti.',
+        '', 'Svona byrjarðu í þremur skrefum:', '');
+      lines.push.apply(lines, steps);
+      lines.push('', ONB_HELP);
+    }
+    lines.push('', variant === 'lists' ? 'Endilega láttu mig vita ef það er eitthvað sem má bæta.' : 'Endilega láttu mig vita ef ég get aðstoðað eitthvað frekar.',
+      '', 'Bestu kveðjur,');
+    if (signer) lines.push(signer);
+    lines.push('Stórkaup');
+    return { subject: subject, text: lines.join('\n') };
+  }
+  function canReply(r) {
+    return !!(GAS_URL && r && r.email && !r.customer_id && r.match_kind !== 'test');
+  }
+
   function reqDraft(r, withOnb, variant, withSignup) {
+    if (!r.customer_id) return reqDraftUnlinked(r, withOnb, variant, withSignup);
     var company = reqNames(r).use;
     var signer = state.myName || (state.actor ? repLabel(state.actor) : '');
     var lines = ['Góðan daginn,', ''];
@@ -1118,19 +1172,24 @@
 
   function openReqMail(id) {
     var r = reqById(id);
-    if (!r || !canMail(r)) return;
-    var onb = neverWeb();
-    var variant = noHistory() ? 'no_history' : 'lists';
+    if (!r) return;
+    var unlinked = !canMail(r);
+    if (unlinked && !canReply(r)) return;
+    // Ótengd beiðni: spjald opna viðskiptavinarins á ekki við hana.
+    var onb = unlinked ? false : neverWeb();
+    var variant = unlinked ? 'ask' : (noHistory() ? 'no_history' : 'lists');
     var signup = !recipientHasLogin(r, r.email);
     var d = reqDraft(r, onb, variant, signup);
+    state.reqLink = null;
     var m = state.reqMail = { id: r.id, subject: d.subject, text: d.text, generated: d.text, genSubject: d.subject,
-                      withOnb: onb, neverWeb: onb, variant: variant, noHistory: variant === 'no_history',
-                      withSignup: signup,
-                      confirm: false, busy: false, grouped: gList().length > 0,
-                      to: r.email, users: null };
+                      withOnb: onb, neverWeb: onb, variant: variant, noHistory: !unlinked && variant === 'no_history',
+                      withSignup: signup, unlinked: unlinked,
+                      confirm: false, busy: false, grouped: !unlinked && gList().length > 0,
+                      to: r.email, users: unlinked ? [] : null };
     render();
     var t = document.getElementById('skv-rqtext');
     if (t) t.focus();
+    if (unlinked) return;
     // Önnur skráð netföng fyrirtækisins sem má senda á í staðinn (sami listi og
     // „Senda póst“; GAS sannreynir viðtakandann aftur við sendingu).
     gas({ action: 'list_recipients', customer_id: r.customer_id }).then(function (out) {
@@ -1182,6 +1241,24 @@
         return '<option value="' + esc(u.email) + '"' + (String(u.email).toLowerCase() === String(m.to || '').toLowerCase() ? ' selected' : '') + '>' +
           (u.name ? esc(u.name) + ' — ' : '') + esc(u.email) + '</option>';
       }).join('');
+    if (m.unlinked) {
+      // Beint svar við ótengdri beiðni: aðeins netfangið sem sendi hana.
+      return '<div class="skv-rqmail" role="group" aria-label="Svar">' +
+        '<div class="skv-sub">Til <b style="color:var(--ink)">' + esc(r.email) + '</b> (sendi beiðnina) · frá vefur@storkaup.is' +
+          (state.authEmail ? ' · svör berast á ' + esc(state.authEmail) : '') + '</div>' +
+        '<div class="skv-req-n">Netfangið er ekki tengt viðskiptavini hjá okkur. Einstaklingar og einyrkjar á eigin kennitölu eru ekki í gögnunum (persónuvernd), svo listinn er gerður í BC.</div>' +
+        '<div class="skv-btns"><div class="skv-seg" role="group" aria-label="Gerð svars">' +
+          '<button type="button" data-act="req-mail-variant" data-v="ask" aria-pressed="' + (m.variant === 'ask') + '"' + dis + '>Fyrir hvaða fyrirtæki?</button>' +
+          '<button type="button" data-act="req-mail-variant" data-v="lists" aria-pressed="' + (m.variant === 'lists') + '"' + dis + '>Listarnir tilbúnir</button>' +
+          '<button type="button" data-act="req-mail-variant" data-v="no_history" aria-pressed="' + (m.variant === 'no_history') + '"' + dis + '>Engin kaupsaga</button></div></div>' +
+        '<label class="skv-reqtog"><input type="checkbox" id="skv-rqonb"' + (m.withOnb ? ' checked' : '') + dis + '> Með vefkynningu</label>' +
+        '<label class="skv-reqtog"><input type="checkbox" id="skv-rqsignup"' + (m.withSignup ? ' checked' : '') + dis + '> Með hlekk á rafræna innskráningu</label>' +
+        '<label>Efni<input type="text" id="skv-rqsubj" maxlength="200" value="' + esc(m.subject) + '"></label>' +
+        '<label>Texti<textarea id="skv-rqtext" maxlength="6000">' + esc(m.text) + '</textarea></label>' +
+        '<div class="skv-btns"><button class="skv-btn skv-pri" data-act="req-mail-send" data-rid="' + esc(r.id) + '"' + dis + '>' +
+          (m.busy ? 'Sendi…' : 'Senda og merkja Lokið') + '</button>' +
+          '<button class="skv-btn" data-act="req-mail-cancel"' + dis + '>Hætta við</button></div></div>';
+    }
     return '<div class="skv-rqmail" role="group" aria-label="Tilkynning">' +
       '<label>Til<select id="skv-rqto" class="skv-sel"' + dis + '>' + toOpts + '</select></label>' +
       '<div class="skv-sub">' + (m.users === null ? 'Sæki skráð netföng fyrirtækisins… · '
@@ -1223,12 +1300,13 @@
     if (r.match_kind === 'colleague' && toOwn && !m.confirm) {
       toast('Hakaðu við að þú hafir staðfest netfangið, eða veldu skráð netfang fyrirtækisins í „Til“.', true); return;
     }
-    if (!window.confirm('Senda tilkynninguna á ' + to + ' og merkja beiðnina Lokið?')) return;
+    if (!window.confirm('Senda ' + (m.unlinked ? 'svarið' : 'tilkynninguna') + ' á ' + to + ' og merkja beiðnina Lokið?')) return;
     var seq = profileSeq;
     m.busy = true; render();
-    gas({ action: 'send_request_done_email', request_id: r.id, customer_id: state.selectedId, to: to,
+    gas({ action: 'send_request_done_email', request_id: r.id,
+          customer_id: m.unlinked ? null : state.selectedId, to: to, reply_unlinked: !!m.unlinked,
           subject: m.subject, text: m.text, confirm_colleague: !!m.confirm, with_onboarding: !!m.withOnb,
-          variant: m.variant === 'no_history' ? 'no_history' : 'lists' })
+          variant: m.variant === 'no_history' || m.variant === 'ask' ? m.variant : 'lists' })
       .then(function (out) {
         m.busy = false;
         if (out && out.ok) {
@@ -1242,6 +1320,7 @@
         toast(e === 'confirm_colleague' ? 'Staðfestu fyrst að netfangið tilheyri fyrirtækinu.'
           : e === 'customer_mismatch' ? 'Beiðnin tilheyrir öðru fyrirtæki en því sem er opið.'
           : e === 'recipient_not_in_customer' ? 'Netfangið er ekki skráð á fyrirtækið. Veldu annað í „Til“.'
+          : e === 'recipient_not_requester' ? 'Svar við ótengdri beiðni fer aðeins á netfangið sem sendi hana.'
           : e === 'not_linked' ? 'Beiðnin er ekki tengd fyrirtæki — ekki hægt að senda héðan.'
           : e === 'rate_limited' ? 'Of margar sendingar í bili. Reyndu aftur eftir smá stund.'
           : e === 'Unauthorized' ? 'Innskráningin rann út. Endurhlaðið síðuna.'
@@ -2456,6 +2535,7 @@
     } else if (act === 'req-mail-open') {
       openReqMail(el.getAttribute('data-rid'));
     } else if (act === 'req-link-open') {
+      state.reqMail = null;
       state.reqLink = { id: el.getAttribute('data-rid'), q: '', results: null, searching: false, err: '' };
       render();
       var lq = document.getElementById('skv-rqlq');
